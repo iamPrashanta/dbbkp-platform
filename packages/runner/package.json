@@ -1,0 +1,10 @@
+{
+  "name": "@dbbkp/runner",
+  "version": "1.0.0",
+  "private": true,
+  "main": "runCommand.ts",
+  "types": "runCommand.ts",
+  "devDependencies": {
+    "typescript": "^5.2.2"
+  }
+}
