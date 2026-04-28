@@ -52,6 +52,18 @@ function App() {
     }
   };
 
+  const triggerSeedDatabase = async () => {
+    try {
+      await fetch('http://localhost:3000/api/backup/seed/pgsql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      fetchJobs();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div className="container">
       <header>
@@ -65,6 +77,7 @@ function App() {
       </header>
 
       <div className="action-bar">
+        <button onClick={triggerSeedDatabase} style={{ background: 'linear-gradient(135deg, var(--success) 0%, #059669 100%)', boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)' }}>🌱 Seed Dummy DB</button>
         <button onClick={triggerTestBackup}>+ Trigger Test Backup</button>
       </div>
 

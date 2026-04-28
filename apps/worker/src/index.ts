@@ -35,6 +35,24 @@ new Worker(
       }
       
       return result.stdout;
+    } else if (job.name === "pgsql-seed") {
+      console.log(`[Worker] Executing job ${job.id}: pgsql-seed`);
+      
+      const seedScriptPath = path.resolve(__dirname, "../../../../scripts/seed-pg.sh").replace(/\\/g, "/");
+      const result = await runCommand({
+        cmd: "bash",
+        args: [seedScriptPath],
+        timeoutMs: 1000 * 60 * 5, // 5 min timeout
+      });
+
+      console.log(`[Worker] Seed Job ${job.id} finished with code ${result.code}`);
+      
+      if (result.code !== 0) {
+        console.error(`[Worker] Error: ${result.stderr}`);
+        throw new Error(`Seed process exited with code ${result.code}. stderr: ${result.stderr}`);
+      }
+      
+      return result.stdout;
     }
   },
   {
