@@ -1,8 +1,7 @@
-import { runCommand } from "@dbbkp/runner";
-import path from "path";
+import { runCommand, resolveScriptPath } from "@dbbkp/runner";
 
 // Resolving the absolute path so we avoid relative chaos
-const scriptPath = path.resolve(__dirname, "../../../../scripts/dbbkp.sh").replace(/\\/g, "/");
+const scriptPath = resolveScriptPath("dbbkp.sh");
 
 export async function runPgBackup(env: {
   DB_HOST: string;

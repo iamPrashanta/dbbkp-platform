@@ -1,8 +1,7 @@
 import { Worker } from "bullmq";
-import { runCommand } from "@dbbkp/runner";
-import path from "path";
+import { runCommand, resolveScriptPath } from "@dbbkp/runner";
 
-const scriptPath = path.resolve(__dirname, "../../../../scripts/dbbkp.sh").replace(/\\/g, "/");
+const scriptPath = resolveScriptPath("dbbkp.sh");
 
 new Worker(
   "backup",
@@ -38,7 +37,7 @@ new Worker(
     } else if (job.name === "pgsql-seed") {
       console.log(`[Worker] Executing job ${job.id}: pgsql-seed`);
       
-      const seedScriptPath = path.resolve(__dirname, "../../../../scripts/seed-pg.sh").replace(/\\/g, "/");
+      const seedScriptPath = resolveScriptPath("seed-pg.sh");
       const result = await runCommand({
         cmd: "bash",
         args: [seedScriptPath],
