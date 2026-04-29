@@ -9,7 +9,10 @@
   "dependencies": {
     "bullmq": "^4.12.0",
     "ioredis": "^5.3.2",
-    "@dbbkp/runner": "workspace:*"
+    "drizzle-orm": "^0.30.10",
+    "postgres": "^3.4.4",
+    "@dbbkp/runner": "workspace:*",
+    "@dbbkp/db": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.2.2",
