@@ -1,4 +1,5 @@
-import { router } from "../trpc";
+import { router } from "./trpc";
+
 import { authRouter } from "./routers/auth.router";
 import { backupRouter } from "./routers/backup.router";
 import { infraRouter } from "./routers/infra.router";
