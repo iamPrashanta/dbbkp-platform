@@ -1,12 +1,13 @@
 #!/bin/bash
 
-set -euo pipefail
+set -uo pipefail
 
 VERSION="3.0.0"
 SCAN_PATHS=("/home" "/var/www")
 JSON_MODE=0
 AUTO_FIX=0
 WEBHOOK_URL=""
+RUN_MODE="full"
 
 # Node identity & Redis configs
 NODE_ID=$(hostname 2>/dev/null || echo "unknown")
@@ -54,9 +55,10 @@ while [[ "$#" -gt 0 ]]; do
         --json) JSON_MODE=1 ;;
         --webhook=*) WEBHOOK_URL="${1#*=}" ;;
         --webhook) WEBHOOK_URL="$2"; shift ;;
+        --mode=*) RUN_MODE="${1#*=}" ;;
         --update) self_update; exit 0 ;;
         scan|version) COMMAND="$1" ;;
-        *) echo "Usage: $0 [scan|version|--update] [--auto-fix] [--json] [--webhook URL]"; exit 1 ;;
+        *) echo "Usage: $0 [scan|version|--update] [--auto-fix] [--json] [--mode=health|disk|network|full] [--webhook URL]"; exit 1 ;;
     esac
     shift
 done
@@ -413,23 +415,30 @@ test_wildcard_routing() {
 
 check_disk_usage() {
     step "Disk Usage"
-    SYS_DISK_JSON="["
+    rm -f /tmp/sys_disk.json
     local first=1
-    
-    df -h | grep -v "loop\|tmpfs\|udev\|overlay\|boot" | awk 'NR>1 {print $6 " " $5}' | while read mount usage; do
-        usage_num=$(echo "$usage" | tr -d '%')
-        local escaped_mount=$(json_escape "$mount")
-        local entry="{\"mount\": $escaped_mount, \"usage_percent\": $usage_num}"
-        
-        if [ "$first" -eq 1 ]; then
-            echo "$entry" > /tmp/sys_disk.json
-            first=0
-        else
-            echo ", $entry" >> /tmp/sys_disk.json
-        fi
-        info "Mount: $mount | Usage: $usage"
-    done || true
-    
+
+    # Only output rows where column 5 looks like a valid percentage (e.g. "47%")
+    # This skips malformed WSL/Windows drive rows where columns shift
+    df -h | grep -v "loop\|tmpfs\|udev\|overlay\|boot" \
+        | awk 'NR>1 && $5 ~ /^[0-9]+%$/ {print $6 " " $5}' \
+        | while read mount usage; do
+            usage_num=$(echo "$usage" | tr -d '%')
+            # Skip if usage_num is not a plain integer
+            case "$usage_num" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            local escaped_mount=$(json_escape "$mount")
+            local entry="{\"mount\": $escaped_mount, \"usage_percent\": $usage_num}"
+            if [ "$first" -eq 1 ]; then
+                echo "$entry" > /tmp/sys_disk.json
+                first=0
+            else
+                echo ", $entry" >> /tmp/sys_disk.json
+            fi
+            info "Mount: $mount | Usage: $usage"
+        done || true
+
     if [ -f /tmp/sys_disk.json ]; then
         SYS_DISK_JSON="[$(cat /tmp/sys_disk.json)]"
         rm -f /tmp/sys_disk.json
@@ -831,6 +840,42 @@ run_all() {
     check_dependencies
     heartbeat
     
+    if [ "$RUN_MODE" == "health" ]; then
+        check_cpu
+        check_memory
+        if [ "$JSON_MODE" -eq 1 ]; then
+            cat <<EOF
+{
+  "cpu_usage_percent": ${SYS_CPU_USAGE:-0},
+  "memory_usage_percent": ${SYS_MEM_USAGE:-0},
+  "uptime_sec": ${SYS_UPTIME:-0}
+}
+EOF
+        fi
+        exit 0
+    elif [ "$RUN_MODE" == "disk" ]; then
+        check_disk_usage
+        if [ "$JSON_MODE" -eq 1 ]; then
+            cat <<EOF
+{
+  "disk": ${SYS_DISK_JSON:-[]}
+}
+EOF
+        fi
+        exit 0
+    elif [ "$RUN_MODE" == "network" ]; then
+        detect_dns_cloudflare
+        test_wildcard_routing
+        if [ "$JSON_MODE" -eq 1 ]; then
+            cat <<EOF
+{
+  "status": "network_checks_completed"
+}
+EOF
+        fi
+        exit 0
+    fi
+
     detect_web_server
     detect_php
     detect_mysql
