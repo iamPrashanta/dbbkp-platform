@@ -13,7 +13,9 @@ interface InfraReport {
   services: {
     webserver: { type: string; status: string };
     php: { version: string; mode: string };
-    database: { type: string; version: string };
+    mysql: { type: string; version: string; status: string };
+    postgresql: { version: string; status: string };
+    redis: { version: string; status: string };
   };
   security: {
     risk_score: number; level: string;
@@ -74,13 +76,12 @@ function MetricCard({ icon, label, value, sub, bar, barColor }: {
 }
 
 function ServiceRow({ label, value, status }: { label: string; value: string; status?: string }) {
-  const isOk = status === 'running';
-  const dot = status ? (isOk ? '🟢' : '🔴') : '⚫';
+  const dot = status === 'running' ? '🟢' : status === 'stopped' ? '🔴' : status === 'not_installed' ? '' : status ? '⚫' : '';
   return (
     <div className="service-row">
-      <span className="service-dot">{dot}</span>
-      <span className="service-label">{label}</span>
-      <span className="service-value">{value}</span>
+      {dot && <span className="service-dot">{dot}</span>}
+      <span className="service-label" style={{ paddingLeft: dot ? undefined : '1.4rem' }}>{label}</span>
+      <span className="service-value">{value || '—'}</span>
     </div>
   );
 }
@@ -174,9 +175,26 @@ function Dashboard({ report, scanTime, scanning, onRescan }: {
         {/* Services */}
         <div className="panel">
           <div className="panel-title">🧩 Services</div>
-          <ServiceRow label="Web Server" value={report.services?.webserver?.type ?? '—'} status={report.services?.webserver?.status} />
-          <ServiceRow label="PHP" value={report.services?.php?.version ?? '—'} />
-          <ServiceRow label="Database" value={`${report.services?.database?.type ?? '—'} ${report.services?.database?.version ?? ''}`.trim()} />
+          {(() => {
+            const s = report.services ?? {};
+            const rows: { label: string; value: string; status?: string }[] = [];
+
+            if (s.webserver?.type && s.webserver.type !== 'none' && s.webserver.type !== 'not_installed')
+              rows.push({ label: 'Web Server', value: s.webserver.type, status: s.webserver.status });
+            if (s.php?.version && s.php.version !== 'not_installed')
+              rows.push({ label: 'PHP', value: `${s.php.version} (${s.php.mode})`, status: s.php.version !== 'not_installed' ? 'running' : undefined });
+            if ((s as any).mysql?.type && (s as any).mysql.type !== 'none')
+              rows.push({ label: 'MySQL', value: `${(s as any).mysql.type} ${(s as any).mysql.version}`, status: (s as any).mysql.status });
+            if ((s as any).postgresql?.status && (s as any).postgresql.status !== 'not_installed')
+              rows.push({ label: 'PostgreSQL', value: (s as any).postgresql.version, status: (s as any).postgresql.status });
+            if ((s as any).redis?.status && (s as any).redis.status !== 'not_installed')
+              rows.push({ label: 'Redis', value: (s as any).redis.version, status: (s as any).redis.status });
+
+            if (rows.length === 0)
+              return <div style={{ color: 'var(--muted)', fontSize: '.82rem' }}>No services detected</div>;
+
+            return rows.map(r => <ServiceRow key={r.label} label={r.label} value={r.value} status={r.status} />);
+          })()}
         </div>
 
         {/* Security */}
@@ -394,7 +412,18 @@ export default function App() {
   const [report, setReport] = useState<InfraReport | null>(null);
   const [scanTime, setScanTime] = useState<number | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const scanJobId = useRef<string | null>(null);
+
+  // ── Slice 5 from each queue, merge-sort; or show everything ──
+  const getVisibleJobs = (all: Job[], expanded: boolean): Job[] => {
+    if (expanded) return all;
+    const backupTop = all.filter(j => j.queue === 'backup').slice(0, 5);
+    const infraTop  = all.filter(j => j.queue === 'infra').slice(0, 5);
+    return [...backupTop, ...infraTop].sort((a, b) => b.timestamp - a.timestamp);
+  };
+  const visibleJobs = getVisibleJobs(jobs, showAll);
+  const hiddenCount = jobs.length - visibleJobs.length;
 
   // ── Fetch & merge all jobs ──
   const fetchJobs = async (): Promise<Job[]> => {
@@ -539,15 +568,52 @@ export default function App() {
           </div>
 
           <div className="glass-panel">
-            <h2 style={{ marginBottom: '1.25rem', fontSize: '1rem' }}>Job Timeline</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h2 style={{ fontSize: '1rem', margin: 0 }}>Job Timeline</h2>
+              {jobs.length > 0 && (
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>
+                  {showAll ? `${jobs.length} total` : `5 backup + 5 infra (${hiddenCount} hidden)`}
+                </div>
+              )}
+            </div>
             {loading ? (
               <div className="empty-state">Connecting…</div>
             ) : jobs.length === 0 ? (
               <div className="empty-state">No jobs yet.</div>
             ) : (
-              <div className="jobs-grid">
-                {jobs.map(j => <JobCard key={j._uid} job={j} onClick={() => setSelectedJob(j)} />)}
-              </div>
+              <>
+                <div className="jobs-grid">
+                  {visibleJobs.map(j => <JobCard key={j._uid} job={j} onClick={() => setSelectedJob(j)} />)}
+                </div>
+                {!showAll && hiddenCount > 0 && (
+                  <button
+                    onClick={() => setShowAll(true)}
+                    style={{
+                      display: 'block', width: '100%', marginTop: '1rem',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      boxShadow: 'none', color: 'var(--muted)',
+                      fontSize: '.82rem', borderRadius: '8px',
+                    }}
+                  >
+                    Load {hiddenCount} more job{hiddenCount !== 1 ? 's' : ''} ↓
+                  </button>
+                )}
+                {showAll && (
+                  <button
+                    onClick={() => setShowAll(false)}
+                    style={{
+                      display: 'block', width: '100%', marginTop: '1rem',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      boxShadow: 'none', color: 'var(--muted)',
+                      fontSize: '.82rem', borderRadius: '8px',
+                    }}
+                  >
+                    Show less ↑
+                  </button>
+                )}
+              </>
             )}
           </div>
         </>

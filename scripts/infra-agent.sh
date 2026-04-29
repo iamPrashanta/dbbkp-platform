@@ -37,12 +37,17 @@ SYS_MEM_USAGE=0
 SYS_DISK_JSON="[]"
 
 # Services
-SRV_WEB_TYPE="unknown"
-SRV_WEB_STATUS="stopped"
-SRV_PHP_VER="unknown"
-SRV_PHP_MODE="unknown"
-SRV_DB_TYPE="unknown"
-SRV_DB_VER="unknown"
+SRV_WEB_TYPE="none"
+SRV_WEB_STATUS="not_installed"
+SRV_PHP_VER="not_installed"
+SRV_PHP_MODE="none"
+SRV_DB_TYPE="none"
+SRV_DB_VER="not_installed"
+SRV_DB_STATUS="not_installed"
+SRV_PG_VER="not_installed"
+SRV_PG_STATUS="not_installed"
+SRV_REDIS_VER="not_installed"
+SRV_REDIS_STATUS="not_installed"
 
 # Attacks
 ATTACKS_TOP_IPS_JSON="[]"
@@ -203,67 +208,135 @@ quarantine_file() {
 
 detect_web_server() {
     step "Web Server"
-    if systemctl is-active --quiet lsws 2>/dev/null; then
+    # Try systemctl first (works on real Linux), fall back to ps + command checks (WSL-safe)
+    if systemctl is-active --quiet lsws 2>/dev/null || ps aux 2>/dev/null | grep -q '[l]sws'; then
         ok "LiteSpeed running"
         SRV_WEB_TYPE="litespeed"
         SRV_WEB_STATUS="running"
-    elif systemctl is-active --quiet nginx 2>/dev/null; then
+    elif systemctl is-active --quiet nginx 2>/dev/null || ps aux 2>/dev/null | grep -q '[n]ginx'; then
         ok "Nginx running"
         SRV_WEB_TYPE="nginx"
         SRV_WEB_STATUS="running"
-    elif systemctl is-active --quiet apache2 2>/dev/null; then
+    elif systemctl is-active --quiet apache2 2>/dev/null || ps aux 2>/dev/null | grep -qE '[a]pache2|[h]ttpd'; then
         ok "Apache running"
         SRV_WEB_TYPE="apache2"
         SRV_WEB_STATUS="running"
+    elif command -v nginx >/dev/null 2>&1; then
+        warn "Nginx installed but not running"
+        SRV_WEB_TYPE="nginx"
+        SRV_WEB_STATUS="stopped"
+    elif command -v apache2 >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then
+        warn "Apache installed but not running"
+        SRV_WEB_TYPE="apache2"
+        SRV_WEB_STATUS="stopped"
     else
         warn "No web server detected"
+        SRV_WEB_TYPE="none"
+        SRV_WEB_STATUS="not_installed"
     fi
 }
 
 detect_php() {
     step "PHP"
-    if command -v php >/dev/null; then
-        PHP_VERSION=$(php -r "echo PHP_VERSION;" 2>/dev/null || true)
+    if command -v php >/dev/null 2>&1; then
+        PHP_VERSION=$(php -r "echo PHP_VERSION;" 2>/dev/null || echo "unknown")
         ok "PHP CLI: $PHP_VERSION"
         SRV_PHP_VER="$PHP_VERSION"
 
         if [ "$SRV_WEB_TYPE" == "litespeed" ]; then
-            info "LiteSpeed uses LSAPI (no PHP-FPM required)"
             SRV_PHP_MODE="lsapi"
+        elif ls /run/php/ 2>/dev/null | grep -q fpm; then
+            SRV_PHP_MODE="php-fpm"
+        elif ps aux 2>/dev/null | grep -q '[p]hp-fpm'; then
+            SRV_PHP_MODE="php-fpm"
         else
-            if ls /run/php/ 2>/dev/null | grep fpm >/dev/null; then
-                ok "PHP-FPM sockets found"
-                SRV_PHP_MODE="php-fpm"
-            else
-                warn "No PHP-FPM sockets found"
-                SRV_PHP_MODE="cli"
-            fi
+            SRV_PHP_MODE="cli"
         fi
-
-        if [[ "$PHP_VERSION" == 8.4* ]]; then
-            warn "PHP 8.4 detected (may break Laravel deps)"
-        fi
-
-        php -m 2>/dev/null | grep curl >/dev/null || warn "Missing ext-curl" || true
-        php -m 2>/dev/null | grep mbstring >/dev/null || warn "Missing ext-mbstring" || true
     else
         warn "PHP not installed"
+        SRV_PHP_VER="not_installed"
+        SRV_PHP_MODE="none"
     fi
 }
 
 detect_mysql() {
     step "MySQL/MariaDB"
-    if command -v mysql >/dev/null; then
-        local version_str=$(mysql -V 2>/dev/null || true)
-        ok "$version_str"
+    # Check if process is running (ps fallback for WSL)
+    local mysql_running=0
+    systemctl is-active --quiet mysql 2>/dev/null && mysql_running=1
+    systemctl is-active --quiet mariadb 2>/dev/null && mysql_running=1
+    ps aux 2>/dev/null | grep -qE '[m]ysqld|[m]ariadbd' && mysql_running=1
+
+    if command -v mysql >/dev/null 2>&1; then
+        local version_str=$(mysql -V 2>/dev/null || echo "")
         if echo "$version_str" | grep -qi "mariadb"; then
             SRV_DB_TYPE="mariadb"
         else
             SRV_DB_TYPE="mysql"
         fi
         SRV_DB_VER=$(echo "$version_str" | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "unknown")
+        if [ "$mysql_running" -eq 1 ]; then
+            ok "$SRV_DB_TYPE $SRV_DB_VER running"
+            SRV_DB_STATUS="running"
+        else
+            warn "$SRV_DB_TYPE installed but not running"
+            SRV_DB_STATUS="stopped"
+        fi
     else
-        warn "MySQL not installed"
+        warn "MySQL/MariaDB not installed"
+        SRV_DB_TYPE="none"
+        SRV_DB_VER="not_installed"
+        SRV_DB_STATUS="not_installed"
+    fi
+}
+
+detect_postgres() {
+    step "PostgreSQL"
+    local pg_running=0
+    systemctl is-active --quiet postgresql 2>/dev/null && pg_running=1
+    service postgresql status >/dev/null 2>&1 && pg_running=1
+    ps aux 2>/dev/null | grep -q '[p]ostgres' && pg_running=1
+
+    if command -v psql >/dev/null 2>&1; then
+        local pg_ver=$(psql --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "unknown")
+        SRV_PG_VER="$pg_ver"
+        if [ "$pg_running" -eq 1 ]; then
+            ok "PostgreSQL $pg_ver running"
+            SRV_PG_STATUS="running"
+        else
+            warn "PostgreSQL installed but not running"
+            SRV_PG_STATUS="stopped"
+        fi
+    else
+        SRV_PG_VER="not_installed"
+        SRV_PG_STATUS="not_installed"
+        warn "PostgreSQL not installed"
+    fi
+}
+
+detect_redis_server() {
+    step "Redis"
+    local redis_running=0
+    systemctl is-active --quiet redis 2>/dev/null && redis_running=1
+    systemctl is-active --quiet redis-server 2>/dev/null && redis_running=1
+    ps aux 2>/dev/null | grep -q '[r]edis-server' && redis_running=1
+
+    if command -v redis-cli >/dev/null 2>&1; then
+        local ping=$(redis-cli -h "${REDIS_HOST:-127.0.0.1}" -p "${REDIS_PORT:-6379}" ping 2>/dev/null || echo "")
+        if [ "$ping" = "PONG" ]; then
+            local redis_ver=$(redis-cli --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "unknown")
+            ok "Redis $redis_ver responding"
+            SRV_REDIS_STATUS="running"
+            SRV_REDIS_VER="$redis_ver"
+        else
+            warn "Redis CLI found but not responding"
+            SRV_REDIS_STATUS="stopped"
+            SRV_REDIS_VER="unknown"
+        fi
+    else
+        SRV_REDIS_STATUS="not_installed"
+        SRV_REDIS_VER="not_installed"
+        warn "Redis not installed"
     fi
 }
 
@@ -787,9 +860,18 @@ generate_final_report() {
       "version": $(json_escape "$SRV_PHP_VER"),
       "mode": $(json_escape "$SRV_PHP_MODE")
     },
-    "database": {
+    "mysql": {
       "type": $(json_escape "$SRV_DB_TYPE"),
-      "version": $(json_escape "$SRV_DB_VER")
+      "version": $(json_escape "$SRV_DB_VER"),
+      "status": $(json_escape "$SRV_DB_STATUS")
+    },
+    "postgresql": {
+      "version": $(json_escape "$SRV_PG_VER"),
+      "status": $(json_escape "$SRV_PG_STATUS")
+    },
+    "redis": {
+      "version": $(json_escape "$SRV_REDIS_VER"),
+      "status": $(json_escape "$SRV_REDIS_STATUS")
     }
   },
   "security": {
@@ -879,6 +961,8 @@ EOF
     detect_web_server
     detect_php
     detect_mysql
+    detect_postgres
+    detect_redis_server
     detect_vhost
     detect_env
     detect_services
