@@ -48,6 +48,12 @@ export default function CreateSitePage() {
         return;
       }
 
+      console.log("[Sites:Create] Uploading project...", {
+        domain,
+        runtime,
+        file: file?.name,
+      });
+
       const formData = new FormData();
       formData.append("project", file);
       formData.append("domain", domain);
@@ -59,13 +65,22 @@ export default function CreateSitePage() {
           body: formData,
         });
 
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "Upload failed");
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          console.error("[Sites:Create] Failed to parse JSON response", e);
+          throw new Error("Invalid server response (not JSON)");
         }
 
+        if (!res.ok) {
+          throw new Error(data?.error || "Upload failed");
+        }
+
+        console.log("[Sites:Create] Upload success:", data);
         router.push("/sites");
       } catch (err: any) {
+        console.error("[Sites:Create] ZIP Deployment error:", err);
         setError(err.message);
         setLoading(false);
       }
@@ -89,9 +104,9 @@ export default function CreateSitePage() {
         <section className="form-section">
           <label>
             <span>Domain Name</span>
-            <input 
-              type="text" 
-              className="input" 
+            <input
+              type="text"
+              className="input"
               placeholder="example.com"
               value={domain}
               onChange={(e) => setDomain(e.target.value)}
@@ -102,23 +117,23 @@ export default function CreateSitePage() {
           <div className="runtime-selector">
             <span>Runtime</span>
             <div className="radio-group">
-              <button 
-                type="button" 
-                className={runtime === "static" ? "active" : ""} 
+              <button
+                type="button"
+                className={runtime === "static" ? "active" : ""}
                 onClick={() => setRuntime("static")}
               >
                 Static
               </button>
-              <button 
-                type="button" 
-                className={runtime === "node" ? "active" : ""} 
+              <button
+                type="button"
+                className={runtime === "node" ? "active" : ""}
                 onClick={() => setRuntime("node")}
               >
                 Node.js
               </button>
-              <button 
-                type="button" 
-                className={runtime === "python" ? "active" : ""} 
+              <button
+                type="button"
+                className={runtime === "python" ? "active" : ""}
                 onClick={() => setRuntime("python")}
               >
                 Python
@@ -131,8 +146,8 @@ export default function CreateSitePage() {
           <div className="source-selector">
             <span>Source</span>
             <div className="source-options">
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className={`source-btn ${source === "zip" ? "active" : ""}`}
                 onClick={() => setSource("zip")}
               >
@@ -142,8 +157,8 @@ export default function CreateSitePage() {
                   <span>Fast manual deployment</span>
                 </div>
               </button>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className={`source-btn ${source === "git" ? "active" : ""}`}
                 onClick={() => setSource("git")}
               >
@@ -160,9 +175,9 @@ export default function CreateSitePage() {
             <label className="file-upload">
               <span>Project Files (.zip)</span>
               <div className="file-dropzone">
-                <input 
-                  type="file" 
-                  accept=".zip" 
+                <input
+                  type="file"
+                  accept=".zip"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                 />
                 <Upload size={24} />
@@ -173,9 +188,9 @@ export default function CreateSitePage() {
             <div className="git-inputs">
               <label>
                 <span>Repository URL</span>
-                <input 
-                  type="text" 
-                  className="input" 
+                <input
+                  type="text"
+                  className="input"
                   placeholder="https://github.com/user/repo"
                   value={repoUrl}
                   onChange={(e) => setRepoUrl(e.target.value)}
@@ -184,9 +199,9 @@ export default function CreateSitePage() {
               </label>
               <label>
                 <span>Branch</span>
-                <input 
-                  type="text" 
-                  className="input" 
+                <input
+                  type="text"
+                  className="input"
                   placeholder="main"
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "../trpc";
+import { router, publicProcedure } from "../trpc";
 import { db, sites } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import { getFreePort } from "../../services/port-manager";
@@ -9,19 +9,19 @@ import crypto from "node:crypto";
 
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
-  list: protectedProcedure.query(async () => {
+  list: publicProcedure.query(async () => {
     return db.select().from(sites).orderBy(sites.createdAt);
   }),
 
   // ─── Create Site ───────────────────────────────────────────────────────────
-  create: protectedProcedure
+  create: publicProcedure
     .input(
       z.object({
         domain: z.string(),
         runtime: z.enum(["static", "node", "python"]),
-        source: z.enum(["zip", "git"]),
-        repoUrl: z.string().optional(),
-        branch: z.string().optional(),
+        source: z.enum(["git"]),
+        repoUrl: z.string(),
+        branch: z.string().default("main"),
       })
     )
     .mutation(async ({ input }) => {
@@ -69,7 +69,7 @@ export const sitesRouter = router({
     }),
 
   // ─── Get Site Status ───────────────────────────────────────────────────────
-  getStatus: protectedProcedure
+  getStatus: publicProcedure
     .input(z.object({ siteId: z.string() }))
     .query(async ({ input }) => {
       const [site] = await db

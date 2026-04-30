@@ -1,77 +1,85 @@
-import { Router } from "express";
+import express from "express";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
+import fs from "fs-extra";
+import crypto from "node:crypto";
 import { db, sites } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
-import { requireAuth } from "./auth";
-import { execSync } from "child_process";
-
 import { getFreePort } from "../services/port-manager";
 import { hostingQueue } from "../queues";
 
-const router = Router();
+const router = express.Router();
 const upload = multer({ dest: "/tmp/dbbkp-uploads/" });
 
 // ─── POST /api/sites/upload ──────────────────────────────────────────────────
-router.post("/upload", requireAuth, upload.single("project"), async (req: any, res) => {
+// Auth disabled temporarily as requested for dev speed
+router.post("/upload", upload.single("project"), async (req: any, res) => {
+  console.log("[Sites:Upload] Received upload request", req.body);
+  
   try {
-    const { domain, type = "static", buildCommand, startCommand } = req.body;
+    const { domain, type } = req.body;
+    const file = req.file;
+
     if (!domain) return res.status(400).json({ error: "Domain is required" });
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
 
-    const docRoot = `/var/www/sites/${domain}`;
-    
-    // 1. Allocate Port
-    const port = await getFreePort();
+    const siteId = crypto.randomUUID();
+    const sitePath = `/var/www/sites/${siteId}`;
 
-    // 2. Create site record or update existing
-    let [site] = await db.select().from(sites).where(eq(sites.domain, domain)).limit(1);
-    
-    if (!site) {
-      [site] = await db.insert(sites).values({
+    console.log(`[Sites:Upload] Preparing site directory: ${sitePath}`);
+    await fs.ensureDir(sitePath);
+
+    // 1. Unzip
+    console.log(`[Sites:Upload] Extracting project files...`);
+    const AdmZip = require("adm-zip");
+    const zip = new AdmZip(file.path);
+    zip.extractAllTo(sitePath, true);
+
+    // 2. Allocate Port
+    const port = type === "static" ? null : await getFreePort();
+    console.log(`[Sites:Upload] Allocated port: ${port}`);
+
+    // 3. Create site record
+    console.log(`[Sites:Upload] Inserting into DB...`);
+    const [newSite] = await db
+      .insert(sites)
+      .values({
+        id: siteId,
         domain,
-        type,
-        docRoot,
+        type: type || "static",
+        docRoot: sitePath,
         port,
-        buildCommand,
-        startCommand,
-        status: "deploying",
-      }).returning();
-    } else {
-      [site] = await db.update(sites).set({
-        type,
-        port,
-        buildCommand,
-        startCommand,
-        status: "deploying",
-      }).where(eq(sites.id, site.id)).returning();
-    }
+        source: "zip",
+        status: "provisioning",
+      })
+      .returning();
 
-    // 3. Extract files
-    if (!fs.existsSync(docRoot)) fs.mkdirSync(docRoot, { recursive: true });
-    
-    const zipPath = req.file.path;
-    execSync(`unzip -o ${zipPath} -d ${docRoot}`);
-    fs.unlinkSync(zipPath); // cleanup
+    // 4. Cleanup temp file
+    await fs.remove(file.path);
 
-    // 4. Trigger Orchestration Job
-    await hostingQueue.add("deploy-site", { siteId: site.id });
+    // 5. Enqueue deployment job
+    console.log(`[Sites:Upload] Enqueueing hosting job...`);
+    await hostingQueue.add("deploy-site", { 
+      siteId: newSite.id,
+      source: "zip"
+    });
 
-    return res.json({ 
-      success: true, 
-      message: "Deployment triggered", 
-      site: { ...site, status: "deploying", port } 
+    return res.json({
+      success: true,
+      siteId: newSite.id,
+      domain,
+      runtime: type,
+      port
     });
 
   } catch (err: any) {
-    console.error("[Sites] Deployment failed:", err);
+    console.error("[Sites:Upload] FAILED:", err);
     return res.status(500).json({ error: err.message });
   }
 });
 
 // ─── GET /api/sites ──────────────────────────────────────────────────────────
-router.get("/", requireAuth, async (req, res) => {
+router.get("/", async (req, res) => {
   try {
     const allSites = await db.select().from(sites);
     return res.json(allSites);
