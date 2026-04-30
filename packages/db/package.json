@@ -4,13 +4,15 @@
   "private": true,
   "main": "./src/index.ts",
   "scripts": {
-    "migrate": "drizzle-kit migrate",
-    "generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx src/seed.ts",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {
     "drizzle-orm": "^0.30.10",
-    "postgres": "^3.4.4"
+    "postgres": "^3.4.4",
+    "bcryptjs": "^2.4.3"
   },
   "devDependencies": {
     "drizzle-kit": "^0.21.4",

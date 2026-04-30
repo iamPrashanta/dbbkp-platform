@@ -5,13 +5,16 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
 export type Context = {
   user: { sub: string; username: string; role: string } | null;
+  lastActivityAt: number | null;
 };
 
 export function createContext({ req }: { req: any }): Context {
   const header = req.headers?.authorization as string | undefined;
+  const lastActivityHeader = req.headers?.["x-last-activity"] as string | undefined;
+  const lastActivityAt = lastActivityHeader ? parseInt(lastActivityHeader) : null;
 
   if (!header?.startsWith("Bearer ")) {
-    return { user: null };
+    return { user: null, lastActivityAt };
   }
 
   try {
@@ -24,9 +27,10 @@ export function createContext({ req }: { req: any }): Context {
         username: payload.username,
         role: payload.role,
       },
+      lastActivityAt,
     };
   } catch {
-    return { user: null };
+    return { user: null, lastActivityAt };
   }
 }
 
@@ -39,6 +43,16 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED" });
   }
+
+  // 30-minute inactivity check
+  const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+  if (ctx.lastActivityAt && (Date.now() - ctx.lastActivityAt > IDLE_TIMEOUT_MS)) {
+    throw new TRPCError({ 
+      code: "UNAUTHORIZED", 
+      message: "Session expired due to inactivity" 
+    });
+  }
+
   return next();
 });
 

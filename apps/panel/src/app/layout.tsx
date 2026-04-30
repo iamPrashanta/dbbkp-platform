@@ -9,6 +9,7 @@ export const metadata = {
 };
 
 import TRPCProvider from "@/trpc/Provider";
+import SessionManager from "@/components/SessionManager";
 import Link from "next/link";
 import { LayoutDashboard, Globe, Terminal, Shield } from "lucide-react";
 
@@ -21,6 +22,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={inter.className}>
         <TRPCProvider>
+          <SessionManager />
           <div className="main-layout">
             <aside className="sidebar">
               <div className="brand">
