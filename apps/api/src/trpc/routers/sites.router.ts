@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { router, publicProcedure } from "../trpc";
 import { db, sites } from "@dbbkp/db";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { getFreePort } from "../../services/port-manager";
 import { hostingQueue } from "../../queues";
 import path from "path";
@@ -17,7 +17,7 @@ function clean<T extends Record<string, any>>(obj: T): T {
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
   list: publicProcedure.query(async () => {
-    return db.select().from(sites).orderBy(sites.createdAt);
+    return db.select().from(sites).orderBy(desc(sites.createdAt));
   }),
 
   // ─── Create Site ───────────────────────────────────────────────────────────

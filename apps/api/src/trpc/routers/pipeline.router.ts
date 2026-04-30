@@ -1,7 +1,7 @@
 import { router, protectedProcedure, adminProcedure } from "../trpc";
 import { z } from "zod";
 import { db, jobs, pipelines, pipelineRuns } from "@dbbkp/db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { pipelineQueue } from "../../queues";
 import { TRPCError } from "@trpc/server";
 
