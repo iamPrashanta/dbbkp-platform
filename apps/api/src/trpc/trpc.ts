@@ -1,7 +1,7 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import jwt from "jsonwebtoken";
 
-import { db, sessions } from "@dbbkp/db";
+import { db, sessions, users } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
@@ -54,55 +54,64 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next, path }) =>
     throw new TRPCError({ code: "UNAUTHORIZED" });
   }
 
-  // 1. Fetch Session AND User Flag from DB (Absolute Source of Truth)
-  const [sessionWithUser] = await db
-    .select({
-      id: sessions.id,
-      expiresAt: sessions.expiresAt,
-      lastActivityAt: sessions.lastActivityAt,
-      mustChangePassword: users.mustChangePassword,
-    })
-    .from(sessions)
-    .innerJoin(users, eq(sessions.userId, users.id))
-    .where(eq(sessions.id, ctx.user.sid))
-    .limit(1);
+  try {
+    // 1. Fetch Session AND User Flag from DB (Absolute Source of Truth)
+    const [sessionWithUser] = await db
+      .select({
+        id: sessions.id,
+        expiresAt: sessions.expiresAt,
+        lastActivityAt: sessions.lastActivityAt,
+        mustChangePassword: users.mustChangePassword,
+      })
+      .from(sessions)
+      .innerJoin(users, eq(sessions.userId, users.id))
+      .where(eq(sessions.id, ctx.user.sid))
+      .limit(1);
 
-  if (!sessionWithUser) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "Session not found" });
-  }
+    if (!sessionWithUser) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: "Session not found" });
+    }
 
-  // 2. Mandatory Password Rotation Enforcement (Real-time DB check)
-  if (sessionWithUser.mustChangePassword && path !== "auth.changePassword") {
+    // 2. Mandatory Password Rotation Enforcement (Real-time DB check)
+    if (sessionWithUser.mustChangePassword && path !== "auth.changePassword") {
+      throw new TRPCError({ 
+        code: "FORBIDDEN", 
+        message: "PASSWORD_ROTATION_REQUIRED" 
+      });
+    }
+
+    const now = new Date();
+
+    // 3. Absolute Expiry Check
+    if (sessionWithUser.expiresAt < now) {
+      await db.delete(sessions).where(eq(sessions.id, sessionWithUser.id));
+      throw new TRPCError({ code: "UNAUTHORIZED", message: "Session expired" });
+    }
+
+    // 4. Idle Inactivity Check (30 minutes)
+    const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+    if (now.getTime() - sessionWithUser.lastActivityAt.getTime() > IDLE_TIMEOUT_MS) {
+      await db.delete(sessions).where(eq(sessions.id, sessionWithUser.id));
+      throw new TRPCError({ 
+        code: "UNAUTHORIZED", 
+        message: "Session expired due to inactivity" 
+      });
+    }
+
+    // 5. Update Activity
+    await db.update(sessions)
+      .set({ lastActivityAt: now })
+      .where(eq(sessions.id, sessionWithUser.id));
+
+    return next();
+  } catch (err) {
+    if (err instanceof TRPCError) throw err;
+    console.error("[TRPC:Auth] Fatal middleware error:", err);
     throw new TRPCError({ 
-      code: "FORBIDDEN", 
-      message: "PASSWORD_ROTATION_REQUIRED" 
+      code: "INTERNAL_SERVER_ERROR", 
+      message: "Authentication service unavailable" 
     });
   }
-
-  const now = new Date();
-
-  // 3. Absolute Expiry Check
-  if (sessionWithUser.expiresAt < now) {
-    await db.delete(sessions).where(eq(sessions.id, sessionWithUser.id));
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "Session expired" });
-  }
-
-  // 4. Idle Inactivity Check (30 minutes)
-  const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-  if (now.getTime() - session.lastActivityAt.getTime() > IDLE_TIMEOUT_MS) {
-    await db.delete(sessions).where(eq(sessions.id, session.id));
-    throw new TRPCError({ 
-      code: "UNAUTHORIZED", 
-      message: "Session expired due to inactivity" 
-    });
-  }
-
-  // 5. Update Activity
-  await db.update(sessions)
-    .set({ lastActivityAt: now })
-    .where(eq(sessions.id, session.id));
-
-  return next();
 });
 
 export const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
