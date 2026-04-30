@@ -5,6 +5,13 @@ import { eq, desc } from "drizzle-orm";
 import { pipelineQueue } from "../../queues";
 import { TRPCError } from "@trpc/server";
 
+// Helper to sanitize DB inputs (Postgres doesn't allow undefined)
+function clean<T extends Record<string, any>>(obj: T): T {
+  return Object.fromEntries(
+    Object.entries(obj).map(([k, v]) => [k, v === undefined ? null : v])
+  ) as T;
+}
+
 export const pipelineRouter = router({
   dashboard: protectedProcedure.query(async () => {
     const [pipelineList, runList] = await Promise.all([
@@ -52,14 +59,14 @@ export const pipelineRouter = router({
       envVars: z.record(z.string()).optional(),
     }))
     .mutation(async ({ input }) => {
-      const [p] = await db.insert(pipelines).values({
+      const [p] = await db.insert(pipelines).values(clean({
         name: input.name,
         repoUrl: input.repoUrl,
         branch: input.branch,
         buildCommand: input.buildCommand,
         deployCommand: input.deployCommand,
         envVars: input.envVars ? JSON.stringify(input.envVars) : null,
-      }).returning();
+      })).returning();
       return p;
     }),
 
@@ -74,7 +81,7 @@ export const pipelineRouter = router({
     }))
     .mutation(async ({ input }) => {
       const { id, ...data } = input;
-      const [p] = await db.update(pipelines).set({ ...data, updatedAt: new Date() })
+      const [p] = await db.update(pipelines).set(clean({ ...data, updatedAt: new Date() }))
         .where(eq(pipelines.id, id)).returning();
       if (!p) throw new TRPCError({ code: "NOT_FOUND" });
       return p;
@@ -95,12 +102,12 @@ export const pipelineRouter = router({
       if (!p.enabled) throw new TRPCError({ code: "BAD_REQUEST", message: "Pipeline is disabled" });
 
       // Create a run record
-      const [run] = await db.insert(pipelineRuns).values({
+      const [run] = await db.insert(pipelineRuns).values(clean({
         pipelineId: p.id,
         status: "waiting",
-        runner: process.env.PIPELINE_ISOLATION || "docker",
-        image: process.env.PIPELINE_DOCKER_IMAGE || "node:20-bookworm",
-      }).returning();
+        runner: process.env.PIPELINE_ISOLATION ?? "docker",
+        image: process.env.PIPELINE_DOCKER_IMAGE ?? "node:20-bookworm",
+      })).returning();
 
       const payload = {
         runId: run.id,

@@ -7,6 +7,13 @@ import { hostingQueue } from "../../queues";
 import path from "path";
 import crypto from "node:crypto";
 
+// Helper to sanitize DB inputs (Postgres doesn't allow undefined)
+function clean<T extends Record<string, any>>(obj: T): T {
+  return Object.fromEntries(
+    Object.entries(obj).map(([k, v]) => [k, v === undefined ? null : v])
+  ) as T;
+}
+
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
   list: publicProcedure.query(async () => {
@@ -38,7 +45,7 @@ export const sitesRouter = router({
         console.log(`[Sites:Create] Inserting into DB...`);
         const [newSite] = await db
           .insert(sites)
-          .values({
+          .values(clean({
             id: siteId,
             domain: input.domain,
             type: input.runtime,
@@ -48,7 +55,7 @@ export const sitesRouter = router({
             repoUrl: input.repoUrl,
             branch: input.branch,
             status: "provisioning",
-          })
+          }))
           .returning();
 
         // Enqueue deployment job
