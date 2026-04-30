@@ -33,8 +33,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     onSuccess: (data) => {
       setUser(data as any);
     },
-    onError: () => {
-      handleLogout();
+    onError: (err) => {
+      if (err.message === "PASSWORD_ROTATION_REQUIRED") {
+        router.push("/setup/password");
+      } else {
+        handleLogout();
+      }
     }
   });
 
