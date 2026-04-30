@@ -2,7 +2,7 @@ import { router, protectedProcedure, publicProcedure } from "../trpc";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { db, users, sessions } from "@dbbkp/db";
+import { db, users, sessions, auditLogs } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import crypto from "node:crypto";
@@ -103,6 +103,7 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const passwordHash = await bcrypt.hash(input.newPassword, 12);
       
+      // 1. Update Password & Flag
       await db.update(users)
         .set(assertClean({
           passwordHash,
@@ -111,8 +112,16 @@ export const authRouter = router({
         }))
         .where(eq(users.id, ctx.user.sub));
 
-      // Revoke current session to force fresh login with new credentials
-      await db.delete(sessions).where(eq(sessions.id, ctx.user.sid));
+      // 2. Security Audit
+      await db.insert(auditLogs).values(assertClean({
+        type: "security",
+        userId: ctx.user.sub,
+        event: "Password changed via dashboard. Mandatory rotation complete.",
+        ip: ctx.ip,
+      }));
+
+      // 3. Global Session Revocation (Ensures old JWTs with sid are useless)
+      await db.delete(sessions).where(eq(sessions.userId, ctx.user.sub));
 
       return { success: true };
     }),

@@ -14,13 +14,15 @@ export type Context = {
     role: string;
     mustChangePassword: boolean;
   } | null;
+  ip: string | null;
 };
 
 export function createContext({ req }: { req: any }): Context {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || null;
   const header = req.headers?.authorization as string | undefined;
 
   if (!header?.startsWith("Bearer ")) {
-    return { user: null };
+    return { user: null, ip };
   }
 
   try {
@@ -33,11 +35,12 @@ export function createContext({ req }: { req: any }): Context {
         sid: payload.sid,
         username: payload.username,
         role: payload.role,
-        mustChangePassword: !!payload.mcp, // We'll use 'mcp' short key in JWT
+        mustChangePassword: !!payload.mcp,
       },
+      ip,
     };
   } catch {
-    return { user: null };
+    return { user: null, ip };
   }
 }
 
@@ -51,31 +54,36 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next, path }) =>
     throw new TRPCError({ code: "UNAUTHORIZED" });
   }
 
-  // 1. Mandatory Password Rotation Enforcement
-  // Allow only the password change mutation if mcp is flagged
-  if (ctx.user.mustChangePassword && path !== "auth.changePassword") {
+  // 1. Fetch Session AND User Flag from DB (Absolute Source of Truth)
+  const [sessionWithUser] = await db
+    .select({
+      id: sessions.id,
+      expiresAt: sessions.expiresAt,
+      lastActivityAt: sessions.lastActivityAt,
+      mustChangePassword: users.mustChangePassword,
+    })
+    .from(sessions)
+    .innerJoin(users, eq(sessions.userId, users.id))
+    .where(eq(sessions.id, ctx.user.sid))
+    .limit(1);
+
+  if (!sessionWithUser) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Session not found" });
+  }
+
+  // 2. Mandatory Password Rotation Enforcement (Real-time DB check)
+  if (sessionWithUser.mustChangePassword && path !== "auth.changePassword") {
     throw new TRPCError({ 
       code: "FORBIDDEN", 
       message: "PASSWORD_ROTATION_REQUIRED" 
     });
   }
 
-  // 2. Fetch Session from DB (Source of Truth)
-  const [session] = await db
-    .select()
-    .from(sessions)
-    .where(eq(sessions.id, ctx.user.sid))
-    .limit(1);
-
-  if (!session) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "Session not found" });
-  }
-
   const now = new Date();
 
   // 3. Absolute Expiry Check
-  if (session.expiresAt < now) {
-    await db.delete(sessions).where(eq(sessions.id, session.id));
+  if (sessionWithUser.expiresAt < now) {
+    await db.delete(sessions).where(eq(sessions.id, sessionWithUser.id));
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Session expired" });
   }
 

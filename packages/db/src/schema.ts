@@ -128,6 +128,16 @@ export const pipelineLogs = pgTable("pipeline_logs", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── AUDIT LOGS ──────────────────────────────────────────────────────────────
+export const auditLogs = pgTable("audit_logs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  type: varchar("type", { length: 50 }).notNull(), // security | deploy | infra
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  event: text("event").notNull(),
+  ip: varchar("ip", { length: 50 }),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -138,3 +148,4 @@ export type PipelineRun = typeof pipelineRuns.$inferSelect;
 export type PipelineLog = typeof pipelineLogs.$inferSelect;
 export type Site = typeof sites.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
+export type AuditLog = typeof auditLogs.$inferSelect;

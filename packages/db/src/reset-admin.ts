@@ -1,5 +1,5 @@
 import { db } from "./index";
-import { users, sessions } from "./schema";
+import { users, sessions, auditLogs } from "./schema";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import crypto from "node:crypto";
@@ -38,7 +38,15 @@ async function resetAdmin() {
       process.exit(1);
     }
 
-    // 2. Revoke all active sessions for this user (Security)
+    // 2. Security Audit
+    await db.insert(auditLogs).values({
+      type: "security",
+      userId: admin.id,
+      event: "Admin password reset via CLI (root access).",
+      ip: "127.0.0.1",
+    });
+
+    // 3. Revoke all active sessions for this user (Security)
     await db.delete(sessions).where(eq(sessions.userId, admin.id));
 
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
