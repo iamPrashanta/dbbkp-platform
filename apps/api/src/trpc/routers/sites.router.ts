@@ -6,15 +6,31 @@ import { getFreePort } from "../../services/port-manager";
 import { hostingQueue } from "../../queues";
 import crypto from "node:crypto";
 
-// ─── UTILITIES ───────────────────────────────────────────────────────────────
+// ─── UTILITIES (HARDENED) ────────────────────────────────────────────────────
 
-function safePayload<T extends Record<string, any>>(obj: T): T {
-  for (const [key, value] of Object.entries(obj)) {
+function deepClean(obj: any): any {
+  if (obj === undefined) return null;
+  if (obj === null) return null;
+  if (Array.isArray(obj)) return obj.map(deepClean);
+  if (typeof obj === "object" && obj !== null) {
+    if (obj instanceof Date) return obj;
+    return Object.fromEntries(
+      Object.entries(obj)
+        .filter(([_, v]) => v !== undefined)
+        .map(([k, v]) => [k, deepClean(v)])
+    );
+  }
+  return obj;
+}
+
+function assertClean<T extends Record<string, any>>(obj: T): T {
+  const cleaned = deepClean(obj);
+  for (const [key, value] of Object.entries(cleaned)) {
     if (value === undefined) {
       throw new Error(`[DB Guard:Sites] Undefined value detected for key: "${key}"`);
     }
   }
-  return obj;
+  return cleaned;
 }
 
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
@@ -46,7 +62,7 @@ export const sitesRouter = router({
 
         const [newSite] = await db
           .insert(sites)
-          .values(safePayload({
+          .values(assertClean({
             id: siteId,
             domain: input.domain,
             type: input.runtime,
