@@ -18,7 +18,7 @@ export const hostingWorker = new Worker(
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     if (!site) throw new Error("Site not found");
 
-    const { domain, docRoot, type, port } = site;
+    const { domain, docRoot, type, port, source, repoUrl, branch } = site;
     const containerName = `dbbkp-site-${site.id.slice(0, 8)}`;
     const logPath = `/var/log/dbbkp/${site.id}.log`;
 
@@ -34,7 +34,7 @@ export const hostingWorker = new Worker(
 
     try {
       await db.update(sites).set({ status: "provisioning" }).where(eq(sites.id, siteId));
-      log(`Starting deployment for ${domain}`);
+      log(`Starting deployment for ${domain} (Source: ${source}, Type: ${type})`);
 
       // 1. Container Cleanup (Thorough)
       log("Cleaning up existing containers...");
@@ -48,62 +48,92 @@ export const hostingWorker = new Worker(
         }
       }
 
-      // 2. Build Stage (Separated)
-      log(`Starting build stage for ${type}...`);
-      const buildImage = type === "node" ? "node:20-alpine" : "python:3.11-slim";
-      const installCmd = type === "node" ? "npm install --production" : "pip install -r requirements.txt";
-
-      const buildContainer = await docker.createContainer({
-        Image: buildImage,
-        Tty: true,
-        HostConfig: { Binds: [`${docRoot}:/app`] },
-        WorkingDir: "/app",
-        Cmd: ["sh", "-c", installCmd],
-      });
-
-      await buildContainer.start();
-      const buildResult = await buildContainer.wait();
-      await buildContainer.remove();
-
-      if (buildResult.StatusCode !== 0) {
-        throw new Error(`Build stage failed with code ${buildResult.StatusCode}`);
+      // 2. Source Preparation
+      await fs.ensureDir(docRoot);
+      if (source === "git" && repoUrl) {
+        log(`Cloning repository: ${repoUrl} (branch: ${branch})...`);
+        // Clean docRoot first
+        await fs.emptyDir(docRoot);
+        await execa("git", ["clone", "--depth=1", "-b", branch || "main", repoUrl, docRoot]);
+      } else if (source === "zip") {
+        log("Project source is ZIP (files already extracted or expected in docRoot)");
       }
-      log("Build stage completed successfully");
 
-      // 3. Runtime Stage (with Health Checks)
-      log("Starting runtime container...");
-      const startCmd = site.startCommand || (type === "node" ? "npm start" : "python app.py");
-      
-      const container = await docker.createContainer({
-        Image: buildImage,
-        name: containerName,
-        ExposedPorts: { [`${port}/tcp`]: {} },
-        Healthcheck: {
-          Test: ["CMD", "sh", "-c", `nc -z localhost ${port} || exit 1`],
-          Interval: 10 * 1000000000, // 10s
-          Timeout: 5 * 1000000000,   // 5s
-          Retries: 3,
-          StartPeriod: 15 * 1000000000, // 15s grace
-        },
-        HostConfig: {
-          Binds: [`${docRoot}:/app`],
-          PortBindings: { [`${port}/tcp`]: [{ HostPort: String(port) }] },
-          RestartPolicy: { Name: "always" },
-          Memory: 512 * 1024 * 1024,
-          CpuPeriod: 100000,
-          CpuQuota: 50000,
-        },
-        WorkingDir: "/app",
-        Env: [`PORT=${port}`, `NODE_ENV=production`],
-        Cmd: ["sh", "-c", startCmd],
-      });
+      // 3. Build Stage (Separated)
+      if (type !== "static") {
+        log(`Starting build stage for ${type}...`);
+        const buildImage = type === "node" ? "node:20-alpine" : "python:3.11-slim";
+        const installCmd = type === "node" ? "npm install --production" : "pip install -r requirements.txt";
 
-      await container.start();
+        const buildContainer = await docker.createContainer({
+          Image: buildImage,
+          Tty: true,
+          HostConfig: { Binds: [`${docRoot}:/app`] },
+          WorkingDir: "/app",
+          Cmd: ["sh", "-c", installCmd],
+        });
+
+        await buildContainer.start();
+        const buildResult = await buildContainer.wait();
+        await buildContainer.remove();
+
+        if (buildResult.StatusCode !== 0) {
+          throw new Error(`Build stage failed with code ${buildResult.StatusCode}`);
+        }
+        log("Build stage completed successfully");
+
+        // 4. Runtime Stage (with Health Checks)
+        log("Starting runtime container...");
+        const startCmd = site.startCommand || (type === "node" ? "npm start" : "python app.py");
+        
+        const container = await docker.createContainer({
+          Image: buildImage,
+          name: containerName,
+          ExposedPorts: { [`${port}/tcp`]: {} },
+          Healthcheck: {
+            Test: ["CMD", "sh", "-c", `nc -z localhost ${port} || exit 1`],
+            Interval: 10 * 1000000000, // 10s
+            Timeout: 5 * 1000000000,   // 5s
+            Retries: 3,
+            StartPeriod: 15 * 1000000000, // 15s grace
+          },
+          HostConfig: {
+            Binds: [`${docRoot}:/app`],
+            PortBindings: { [`${port}/tcp`]: [{ HostPort: String(port) }] },
+            RestartPolicy: { Name: "always" },
+            Memory: 512 * 1024 * 1024,
+            CpuPeriod: 100000,
+            CpuQuota: 50000,
+          },
+          WorkingDir: "/app",
+          Env: [`PORT=${port}`, `NODE_ENV=production`],
+          Cmd: ["sh", "-c", startCmd],
+        });
+
+        await container.start();
+        log(`Runtime container started: ${containerName}`);
+      }
       log(`Runtime container started: ${containerName}`);
 
-      // 4. Nginx Configuration
-      log("Configuring Nginx proxy...");
-      const nginxConfig = `
+      // 5. Nginx Configuration
+      log("Configuring Nginx...");
+      let nginxConfig = "";
+
+      if (type === "static") {
+        nginxConfig = `
+server {
+    listen 80;
+    server_name ${domain};
+    root ${docRoot};
+    index index.html index.htm;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+`;
+      } else {
+        nginxConfig = `
 server {
     listen 80;
     server_name ${domain};
@@ -120,6 +150,8 @@ server {
     }
 }
 `;
+      }
+
       const configPath = `/etc/nginx/sites-available/dbbkp-${domain}`;
       const enabledPath = `/etc/nginx/sites-enabled/dbbkp-${domain}`;
       const tmpPath = `/tmp/nginx-${domain}.conf`;

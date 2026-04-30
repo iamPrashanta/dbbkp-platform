@@ -85,6 +85,9 @@ export const sites = pgTable("sites", {
   docRoot: text("doc_root").notNull(),
   port: integer("port"), // Internal port for the app
   pm2Name: varchar("pm2_name", { length: 100 }), // PM2 process name
+  source: varchar("source", { length: 20 }).notNull().default("zip"), // zip | git
+  repoUrl: text("repo_url"),
+  branch: varchar("branch", { length: 100 }).default("main"),
   buildCommand: text("build_command"),
   startCommand: text("start_command"),
   status: varchar("status", { length: 20 }).notNull().default("pending"),

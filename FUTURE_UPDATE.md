@@ -21,7 +21,7 @@ This document outlines the strategic roadmap for evolving the DBBKP platform fro
 
 ### 🔥 Phase 1: Production Stability (Immediate Impact)
 
-*Goal: Bridge the gap between "functional" and "reliable".*
+> **Goal**: Bridge the gap between "functional" and "reliable".
 
 1. **Docker Image Build System**
    - Transition from `docker run` + runtime install to `docker build` with tagging (e.g., `site-id:v1`).
@@ -38,7 +38,7 @@ This document outlines the strategic roadmap for evolving the DBBKP platform fro
 
 ### 🟡 Phase 2: The "Control Panel" Power
 
-*Goal: Add traditional hosting features similar to Plesk/cPanel.*
+> **Goal**: Add traditional hosting features similar to Plesk/cPanel.
 
 1. **Domain & DNS Management**
    - UI for mapping multiple domains to a single site.
@@ -52,7 +52,7 @@ This document outlines the strategic roadmap for evolving the DBBKP platform fro
 
 ### 🔵 Phase 3: Infrastructure Scaling
 
-*Goal: Move toward multi-node orchestration like Coolify.*
+> **Goal**: Move toward multi-node orchestration like Coolify.
 
 1. **Multi-Server Management**
    - Connect remote nodes via SSH.
@@ -87,4 +87,4 @@ We are currently focusing on the **Docker Image Builder** and **SSL Automation**
 3. Implementing **Encrypted Env Injection**.
 
 ---
-*Last Updated: 2026-04-30*
+*Last Updated: 2026-04-30* — DBBKP Automation

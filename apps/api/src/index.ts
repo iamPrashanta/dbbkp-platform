@@ -61,20 +61,45 @@ app.post("/internal/log", (req, res) => {
   res.json({ ok: true });
 });
 
+import getPort from "get-port";
+
 // ─── HTTP + WS Server ──────────────────────────────────────
-const PORT = Number(process.env.PORT ?? 4000);
+async function startServer() {
+  const DEFAULT_PORT = Number(process.env.PORT ?? 4000);
+  
+  // Dynamic port allocation (checks OS-level availability)
+  const port = await getPort({ 
+    port: [DEFAULT_PORT, 4001, 4002, 4003] 
+  });
 
-const httpServer = http.createServer(app);
+  const httpServer = http.createServer(app);
 
-// Attach WebSocket server
-setupLogWebSocketServer(httpServer);
+  // Attach WebSocket server
+  setupLogWebSocketServer(httpServer);
 
-// IMPORTANT: bind to 0.0.0.0 (fix WSL / network access)
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log("\n═══════════════════════════════════════");
-  console.log(`[API] Listening on http://localhost:${PORT}`);
-  console.log(`[API] Health: http://localhost:${PORT}/health`);
-  console.log(`[API] tRPC: http://localhost:${PORT}/trpc`);
-  console.log(`[API] WS Logs: ws://localhost:${PORT}/ws/logs?jobId=<id>`);
-  console.log("═══════════════════════════════════════\n");
+  httpServer.listen(port, "0.0.0.0", () => {
+    console.log("\n═══════════════════════════════════════");
+    console.log(`[API] Server Ready`);
+    console.log(`[API] URL: http://localhost:${port}`);
+    console.log(`[API] tRPC: http://localhost:${port}/trpc`);
+    console.log(`[API] WS Logs: ws://localhost:${port}/ws/logs`);
+    if (port !== DEFAULT_PORT) {
+      console.warn(`[API] Warning: Port ${DEFAULT_PORT} was busy. Fallback to ${port}.`);
+    }
+    console.log("═══════════════════════════════════════\n");
+  });
+
+  httpServer.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[API] Error: Port ${port} is already in use.`);
+      process.exit(1);
+    } else {
+      console.error("[API] Server error:", err);
+    }
+  });
+}
+
+startServer().catch((err) => {
+  console.error("[API] Failed to start server:", err);
+  process.exit(1);
 });

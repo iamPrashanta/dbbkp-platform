@@ -4,7 +4,7 @@
  * Env: DATABASE_URL, ADMIN_USERNAME, ADMIN_EMAIL, ADMIN_PASSWORD
  */
 import postgres from "postgres";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ||
