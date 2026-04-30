@@ -1,5 +1,8 @@
+import "./env";
 import { Worker } from "bullmq";
 import { runCommand, resolveScriptPath } from "@dbbkp/runner";
+import { connection } from "./connection";
+import "./pipeline.worker";
 
 const scriptPath = resolveScriptPath("dbbkp.sh");
 
@@ -55,7 +58,7 @@ new Worker(
     }
   },
   {
-    connection: { host: process.env.REDIS_HOST || "127.0.0.1", port: parseInt(process.env.REDIS_PORT || "6379") },
+    connection,
   }
 );
 
@@ -105,7 +108,7 @@ new Worker(
     }
   },
   {
-    connection: { host: process.env.REDIS_HOST || "127.0.0.1", port: parseInt(process.env.REDIS_PORT || "6379") },
+    connection,
   }
 );
 

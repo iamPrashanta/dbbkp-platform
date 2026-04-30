@@ -4,13 +4,15 @@ import { httpBatchLink } from "@trpc/client";
 import React, { useState } from "react";
 import { trpc } from "../utils/trpc";
 
+const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
 export default function TRPCProvider({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
   const [trpcClient] = useState(() =>
     trpc.createClient({
       links: [
         httpBatchLink({
-          url: "http://localhost:3000/trpc",
+          url: `${apiUrl}/trpc`,
           headers() {
             if (typeof window !== "undefined") {
               const token = localStorage.getItem("token");
@@ -22,7 +24,7 @@ export default function TRPCProvider({ children }: { children: React.ReactNode }
           },
         }),
       ],
-    })
+    } as any)
   );
 
   return (

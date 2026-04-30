@@ -1,3 +1,4 @@
+import "./env";
 import express from "express";
 import cors from "cors";
 import http from "http";
@@ -7,7 +8,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./trpc";
 import { createContext } from "./trpc/trpc";
 
-import { setupLogWebSocketServer } from "./ws/logs";
+import { broadcastLog, setupLogWebSocketServer } from "./ws/logs";
 
 // REST routes
 import authRouter from "./routes/auth";
@@ -43,6 +44,17 @@ app.use("/api/infra", infraRouterLegacy);
 // ─── Health ────────────────────────────────────────────────
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", ts: Date.now() });
+});
+
+app.post("/internal/log", (req, res) => {
+  const { jobId, message, type } = req.body ?? {};
+  if (!jobId || typeof message !== "string") {
+    res.status(400).json({ error: "jobId and message are required" });
+    return;
+  }
+
+  broadcastLog(String(jobId), message, type === "error" || type === "done" ? type : "log");
+  res.json({ ok: true });
 });
 
 // ─── HTTP + WS Server ──────────────────────────────────────

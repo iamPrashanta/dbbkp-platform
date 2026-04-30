@@ -67,8 +67,14 @@ export const pipelineRuns = pgTable("pipeline_runs", {
   status: varchar("status", { length: 20 }).notNull().default("waiting"),
   commitSha: varchar("commit_sha", { length: 40 }),
   log: text("log"),
+  runner: varchar("runner", { length: 20 }).default("docker"),
+  image: varchar("image", { length: 255 }),
+  exitCode: integer("exit_code"),
+  error: text("error"),
   createdAt: timestamp("created_at").defaultNow(),
+  startedAt: timestamp("started_at"),
   finishedAt: timestamp("finished_at"),
+  durationMs: integer("duration_ms"),
 });
 
 // ─── SITES (traditional hosting) ─────────────────────────────────────────────

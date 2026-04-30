@@ -17,6 +17,15 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@dbbkp/api/*": [
+        "../api/*"
+      ]
+    },
     "plugins": [
       {
         "name": "next"

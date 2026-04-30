@@ -1,43 +1,80 @@
+import "./env";
 import { Worker } from "bullmq";
 import { connection } from "./connection";
-import { db, pipelineRuns } from "@dbbkp/db";
+import { db, jobs, pipelineRuns } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import { spawn } from "child_process";
-import path from "path";
 import fs from "fs";
+import os from "os";
+import path from "path";
 
-// We import broadcastLog via HTTP POST to avoid circular dep across apps
-// In production, move logClients to a shared Redis pub/sub channel
-async function sendLog(jobId: string, msg: string, type = "log") {
+type PipelineJobData = {
+  runId?: string;
+  dbJobId?: string;
+  pipelineId: string;
+  repoUrl: string;
+  branch: string;
+  buildCommand?: string | null;
+  deployCommand?: string | null;
+  envVars?: Record<string, string>;
+};
+
+const ALLOWED_COMMANDS = new Set(["npm", "pnpm", "yarn", "node", "python3", "pip3", "make", "go", "cargo"]);
+const isolationMode = process.env.PIPELINE_ISOLATION || "docker";
+const dockerImage = process.env.PIPELINE_DOCKER_IMAGE || "node:20-bookworm";
+const dockerMemory = process.env.PIPELINE_DOCKER_MEMORY || "1g";
+const dockerCpus = process.env.PIPELINE_DOCKER_CPUS || "1";
+const dockerNetwork = process.env.PIPELINE_DOCKER_NETWORK || "bridge";
+
+async function sendLog(jobId: string, msg: string, type: "log" | "error" | "done" = "log") {
+  const apiPort = process.env.API_PORT || process.env.PORT || "4000";
   try {
-    await fetch(`http://localhost:${process.env.API_PORT ?? 3000}/internal/log`, {
+    await fetch(`http://localhost:${apiPort}/internal/log`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId, message: msg, type }),
-    }).catch(() => {}); // non-critical, swallow errors
-  } catch {}
+    }).catch(() => undefined);
+  } catch {
+    // Log transport must never fail the job.
+  }
 }
 
-// ─── Allowed commands (security: no raw user shell injection) ─────────────────
-const ALLOWED_PREFIXES = ["npm", "pnpm", "yarn", "node", "python3", "pip3", "make", "go", "cargo", "bash -c", "sh -c"];
-
-function isCommandSafe(cmd: string): boolean {
-  return ALLOWED_PREFIXES.some(prefix => cmd.trim().startsWith(prefix));
+async function appendRunLog(runId: string | undefined, message: string) {
+  if (!runId) return;
+  const [run] = await db.select({ log: pipelineRuns.log }).from(pipelineRuns).where(eq(pipelineRuns.id, runId)).limit(1);
+  const nextLog = `${run?.log ?? ""}${message}`.slice(-200_000);
+  await db.update(pipelineRuns).set({ log: nextLog }).where(eq(pipelineRuns.id, runId));
 }
 
-// ─── Run a command and stream stdout/stderr ───────────────────────────────────
-function runCommandStreamed(
-  cmd: string,
+async function patchRun(runId: string | undefined, data: Partial<typeof pipelineRuns.$inferInsert>) {
+  if (!runId) return;
+  await db.update(pipelineRuns).set(data).where(eq(pipelineRuns.id, runId));
+}
+
+async function patchJob(dbJobId: string | undefined, data: Partial<typeof jobs.$inferInsert>) {
+  if (!dbJobId) return;
+  await db.update(jobs).set(data).where(eq(jobs.id, dbJobId));
+}
+
+function ensureCommandAllowed(command: string) {
+  const executable = command.trim().split(/\s+/)[0];
+  if (!ALLOWED_COMMANDS.has(executable)) {
+    throw new Error(`Command "${executable}" is not allowed for pipeline execution`);
+  }
+}
+
+function streamProcess(
+  command: string,
   args: string[],
   cwd: string,
   jobId: string,
-  env: Record<string, string> = {}
+  runId: string | undefined,
+  env: Record<string, string> = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
-
-    const child = spawn(cmd, args, {
+    const child = spawn(command, args, {
       cwd,
       env: { ...process.env, ...env },
       shell: false,
@@ -47,88 +84,155 @@ function runCommandStreamed(
       const msg = data.toString();
       stdout += msg;
       sendLog(jobId, msg);
+      appendRunLog(runId, msg);
     });
 
     child.stderr.on("data", (data: Buffer) => {
       const msg = data.toString();
       stderr += msg;
       sendLog(jobId, msg, "error");
+      appendRunLog(runId, msg);
     });
 
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
-    child.on("error", (err) => {
-      stderr += err.message;
-      resolve({ code: 1, stdout, stderr });
-    });
+    child.on("error", (err) => resolve({ code: 1, stdout, stderr: `${stderr}${err.message}` }));
   });
 }
 
-// ─── Pipeline Worker ──────────────────────────────────────────────────────────
-export const pipelineWorker = new Worker(
+async function runHostCommand(command: string, cwd: string, jobId: string, runId: string | undefined, env: Record<string, string>) {
+  ensureCommandAllowed(command);
+  const [bin, ...args] = command.trim().split(/\s+/);
+  return streamProcess(bin, args, cwd, jobId, runId, env);
+}
+
+async function runDockerCommand(command: string, cwd: string, jobId: string, runId: string | undefined, env: Record<string, string>) {
+  ensureCommandAllowed(command);
+  const envArgs = Object.keys(env).flatMap((key) => ["-e", key]);
+  const dockerArgs = [
+    "run",
+    "--rm",
+    "--init",
+    "--network",
+    dockerNetwork,
+    "--memory",
+    dockerMemory,
+    "--cpus",
+    dockerCpus,
+    "--pids-limit",
+    "256",
+    "--security-opt",
+    "no-new-privileges",
+    "--cap-drop",
+    "ALL",
+    "-v",
+    `${cwd}:/workspace`,
+    "-w",
+    "/workspace",
+    ...envArgs,
+    dockerImage,
+    "sh",
+    "-lc",
+    command,
+  ];
+
+  return streamProcess("docker", dockerArgs, cwd, jobId, runId, env);
+}
+
+async function runPipelineCommand(command: string, cwd: string, jobId: string, runId: string | undefined, env: Record<string, string>) {
+  if (isolationMode === "host") {
+    return runHostCommand(command, cwd, jobId, runId, env);
+  }
+
+  return runDockerCommand(command, cwd, jobId, runId, env);
+}
+
+export const pipelineWorker = new Worker<PipelineJobData>(
   "pipeline",
   async (job) => {
     if (job.name !== "pipeline-run") return;
 
-    const { runId, pipelineId, repoUrl, branch, buildCommand, deployCommand, envVars = {} } = job.data;
-    const workDir = `/tmp/dbbkp-pipeline-${job.id}`;
+    const { runId, dbJobId, repoUrl, branch, buildCommand, deployCommand, envVars = {} } = job.data;
+    const workDir = path.join(os.tmpdir(), `dbbkp-pipeline-${job.id}`);
     const jid = String(job.id);
+    const startedAt = new Date();
 
-    await sendLog(jid, `🚀 Pipeline started — cloning ${repoUrl}@${branch}\n`);
-
-    // Mark run as active
-    if (runId) {
-      await db.update(pipelineRuns).set({ status: "active" }).where(eq(pipelineRuns.id, runId));
-    }
+    await patchRun(runId, {
+      status: "active",
+      startedAt,
+      runner: isolationMode,
+      image: isolationMode === "docker" ? dockerImage : null,
+    });
+    await patchJob(dbJobId, { status: "active" });
+    await sendLog(jid, `Pipeline started: ${repoUrl} (${branch})\n`);
+    await appendRunLog(runId, `Pipeline started: ${repoUrl} (${branch})\n`);
 
     try {
-      // 1. Clean work dir
       if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
       fs.mkdirSync(workDir, { recursive: true });
 
-      // 2. Git clone
-      const clone = await runCommandStreamed("git", ["clone", "-b", branch, repoUrl, "."], workDir, jid);
-      if (clone.code !== 0) throw new Error(`git clone failed: ${clone.stderr}`);
+      const clone = await streamProcess("git", ["clone", "-b", branch, repoUrl, "."], workDir, jid, runId);
+      if (clone.code !== 0) {
+        throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
+      }
 
-      // 3. Build
       if (buildCommand) {
-        if (!isCommandSafe(buildCommand)) throw new Error(`Build command not allowed: "${buildCommand}"`);
-        await sendLog(jid, `\n🔨 Running build: ${buildCommand}\n`);
-        const [buildBin, ...buildArgs] = buildCommand.split(" ");
-        const build = await runCommandStreamed(buildBin, buildArgs, workDir, jid, envVars);
-        if (build.code !== 0) throw new Error(`Build failed (exit ${build.code})`);
+        await sendLog(jid, `\nRunning build in ${isolationMode}: ${buildCommand}\n`);
+        await appendRunLog(runId, `\nRunning build in ${isolationMode}: ${buildCommand}\n`);
+        const build = await runPipelineCommand(buildCommand, workDir, jid, runId, envVars);
+        if (build.code !== 0) throw new Error(`Build failed with exit code ${build.code}`);
       }
 
-      // 4. Deploy
       if (deployCommand) {
-        if (!isCommandSafe(deployCommand)) throw new Error(`Deploy command not allowed: "${deployCommand}"`);
-        await sendLog(jid, `\n🚢 Running deploy: ${deployCommand}\n`);
-        const [depBin, ...depArgs] = deployCommand.split(" ");
-        const deploy = await runCommandStreamed(depBin, depArgs, workDir, jid, envVars);
-        if (deploy.code !== 0) throw new Error(`Deploy failed (exit ${deploy.code})`);
+        await sendLog(jid, `\nRunning deploy in ${isolationMode}: ${deployCommand}\n`);
+        await appendRunLog(runId, `\nRunning deploy in ${isolationMode}: ${deployCommand}\n`);
+        const deploy = await runPipelineCommand(deployCommand, workDir, jid, runId, envVars);
+        if (deploy.code !== 0) throw new Error(`Deploy failed with exit code ${deploy.code}`);
       }
 
-      await sendLog(jid, `\n✅ Pipeline completed successfully\n`, "done");
+      const finishedAt = new Date();
+      const result = { success: true, finishedAt: finishedAt.toISOString() };
+      await sendLog(jid, "\nPipeline completed successfully\n", "done");
+      await appendRunLog(runId, "\nPipeline completed successfully\n");
+      await patchRun(runId, {
+        status: "completed",
+        exitCode: 0,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+      });
+      await patchJob(dbJobId, {
+        status: "completed",
+        result: JSON.stringify(result),
+        finishedAt,
+      });
 
-      if (runId) {
-        await db.update(pipelineRuns).set({ status: "completed", finishedAt: new Date() })
-          .where(eq(pipelineRuns.id, runId));
-      }
-
-      return { success: true };
-    } catch (err: any) {
-      await sendLog(jid, `\n❌ Pipeline failed: ${err.message}\n`, "error");
-      if (runId) {
-        await db.update(pipelineRuns)
-          .set({ status: "failed", finishedAt: new Date(), log: err.message })
-          .where(eq(pipelineRuns.id, runId));
-      }
+      return result;
+    } catch (err) {
+      const finishedAt = new Date();
+      const message = err instanceof Error ? err.message : String(err);
+      await sendLog(jid, `\nPipeline failed: ${message}\n`, "error");
+      await appendRunLog(runId, `\nPipeline failed: ${message}\n`);
+      await patchRun(runId, {
+        status: "failed",
+        exitCode: 1,
+        error: message,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+      });
+      await patchJob(dbJobId, {
+        status: "failed",
+        error: message,
+        finishedAt,
+      });
       throw err;
     } finally {
-      // Cleanup work dir
-      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+      try {
+        fs.rmSync(workDir, { recursive: true, force: true });
+      } catch {
+        // Best effort cleanup.
+      }
     }
   },
-  { connection, concurrency: 2 }
+  { connection, concurrency: Number.parseInt(process.env.PIPELINE_CONCURRENCY || "2", 10) },
 );
 
 pipelineWorker.on("completed", (job) => console.log(`[Pipeline] Job ${job.id} completed`));
