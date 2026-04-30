@@ -12,6 +12,7 @@
     "lint": "turbo run lint",
     "postinstall": "node sync-scripts.js",
     "sync:scripts": "node sync-scripts.js",
+    "dev:clean": "pkill -9 node || true && rm -rf node_modules .turbo && pnpm install && pnpm dev",
     "migrate:pipeline-runs": "tsx scripts/migrate-pipeline-run-metadata.ts"
   },
   "devDependencies": {

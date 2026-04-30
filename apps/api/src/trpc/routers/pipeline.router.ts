@@ -1,7 +1,7 @@
 import { router, protectedProcedure, adminProcedure } from "../trpc";
 import { z } from "zod";
 import { db, jobs, pipelines, pipelineRuns } from "@dbbkp/db";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { pipelineQueue } from "../../queues";
 import { TRPCError } from "@trpc/server";
 
@@ -14,6 +14,11 @@ function clean<T extends Record<string, any>>(obj: T): T {
 
 export const pipelineRouter = router({
   dashboard: protectedProcedure.query(async () => {
+    // Debug: Verify column resolution to prevent UNDEFINED_VALUE errors
+    console.log("[DB] Verifying schema binding:", { 
+      pipelineRunsCreatedAt: !!pipelineRuns.createdAt 
+    });
+
     const [pipelineList, runList] = await Promise.all([
       db.select().from(pipelines).orderBy(desc(pipelines.createdAt)),
       db.select().from(pipelineRuns).orderBy(desc(pipelineRuns.createdAt)).limit(50),
