@@ -3,7 +3,7 @@ import { connection } from "./connection";
 import { db, sites } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import Docker from "dockerode";
-import { execa } from "execa";
+import execa from "execa";
 import fs from "fs-extra";
 
 const docker = new Docker();

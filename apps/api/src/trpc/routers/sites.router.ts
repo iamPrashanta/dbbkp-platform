@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { getFreePort } from "../../services/port-manager";
 import { hostingQueue } from "../../queues";
 import path from "path";
+import crypto from "node:crypto";
 
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
@@ -24,36 +25,47 @@ export const sitesRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      const siteId = crypto.randomUUID();
-      const docRoot = `/var/www/sites/${siteId}`;
-      
-      // Allocate port if not static
-      const port = input.runtime === "static" ? null : await getFreePort();
+      console.log(`[Sites:Create] Initializing site for domain: ${input.domain}`);
+      try {
+        const siteId = crypto.randomUUID();
+        const docRoot = `/var/www/sites/${siteId}`;
+        
+        // Allocate port if not static
+        console.log(`[Sites:Create] Allocating port for ${input.runtime}...`);
+        const port = input.runtime === "static" ? null : await getFreePort();
+        console.log(`[Sites:Create] Allocated port: ${port}`);
 
-      const [newSite] = await db
-        .insert(sites)
-        .values({
-          id: siteId,
-          domain: input.domain,
-          type: input.runtime,
-          docRoot,
-          port,
+        console.log(`[Sites:Create] Inserting into DB...`);
+        const [newSite] = await db
+          .insert(sites)
+          .values({
+            id: siteId,
+            domain: input.domain,
+            type: input.runtime,
+            docRoot,
+            port,
+            source: input.source,
+            repoUrl: input.repoUrl,
+            branch: input.branch,
+            status: "provisioning",
+          })
+          .returning();
+
+        // Enqueue deployment job
+        console.log(`[Sites:Create] Enqueueing hosting job...`);
+        await hostingQueue.add("deploy-site", { 
+          siteId: newSite.id,
           source: input.source,
           repoUrl: input.repoUrl,
-          branch: input.branch,
-          status: "provisioning",
-        })
-        .returning();
+          branch: input.branch
+        });
 
-      // Enqueue deployment job
-      await hostingQueue.add("deploy-site", { 
-        siteId: newSite.id,
-        source: input.source,
-        repoUrl: input.repoUrl,
-        branch: input.branch
-      });
-
-      return newSite;
+        console.log(`[Sites:Create] Success! SiteID: ${newSite.id}`);
+        return newSite;
+      } catch (err: any) {
+        console.error(`[Sites:Create] FAILED:`, err);
+        throw err;
+      }
     }),
 
   // ─── Get Site Status ───────────────────────────────────────────────────────

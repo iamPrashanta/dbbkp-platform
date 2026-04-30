@@ -3,6 +3,8 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import morgan from "morgan";
+import getPort from "get-port";
+import crypto from "node:crypto";
 
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./trpc";
@@ -61,15 +63,22 @@ app.post("/internal/log", (req, res) => {
   res.json({ ok: true });
 });
 
-import getPort from "get-port";
+// ─── Error Handling ────────────────────────────────────────
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("[Express Error]:", err);
+  res.status(500).json({ 
+    error: "Internal Server Error", 
+    message: err.message || "An unexpected error occurred" 
+  });
+});
 
 // ─── HTTP + WS Server ──────────────────────────────────────
 async function startServer() {
-  const DEFAULT_PORT = Number(process.env.PORT ?? 4000);
+  const DEFAULT_PORT = Number(process.env.API_PORT ?? 4000);
   
-  // Dynamic port allocation (checks OS-level availability)
+  // Use a fixed port to keep frontend alignment
   const port = await getPort({ 
-    port: [DEFAULT_PORT, 4001, 4002, 4003] 
+    port: [DEFAULT_PORT] 
   });
 
   const httpServer = http.createServer(app);

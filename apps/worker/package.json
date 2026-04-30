@@ -12,11 +12,19 @@
     "drizzle-orm": "^0.30.10",
     "postgres": "^3.4.4",
     "@dbbkp/runner": "workspace:*",
-    "@dbbkp/db": "workspace:*"
+    "@dbbkp/db": "workspace:*",
+    "execa": "^5.1.1",
+    "get-port": "^5.1.1",
+    "fs-extra": "^11.2.0",
+    "tar": "^6.2.1",
+    "dockerode": "^4.0.2"
   },
   "devDependencies": {
     "typescript": "^5.2.2",
     "tsx": "^3.12.7",
-    "@types/node": "^20.8.0"
+    "@types/node": "^20.8.0",
+    "@types/fs-extra": "^11.0.4",
+    "@types/tar": "^6.1.13",
+    "@types/dockerode": "^3.3.29"
   }
 }
