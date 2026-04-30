@@ -3,6 +3,7 @@ import { Worker } from "bullmq";
 import { runCommand, resolveScriptPath } from "@dbbkp/runner";
 import { connection } from "./connection";
 import "./pipeline.worker";
+import "./hosting.worker";
 
 const scriptPath = resolveScriptPath("dbbkp.sh");
 

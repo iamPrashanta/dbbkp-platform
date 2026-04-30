@@ -109,15 +109,21 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────
-# 4. Firewall (optional)
+# 4. Pre-pull Docker images
 # ─────────────────────────────────────────────────────────────
-if command -v ufw >/dev/null 2>&1; then
-  log "Configuring firewall..."
-  ufw allow 3000/tcp >/dev/null 2>&1 || true
-  ufw allow 5173/tcp >/dev/null 2>&1 || true
-  ufw allow 8091/tcp >/dev/null 2>&1 || true
-  ok "Firewall configured"
+DOCKER_IMAGE_NODE="${PIPELINE_DOCKER_IMAGE_NODE:-node:20-alpine}"
+DOCKER_IMAGE_PYTHON="${PIPELINE_DOCKER_IMAGE_PYTHON:-python:3.11-slim}"
+
+if command -v docker >/dev/null 2>&1; then
+  log "Pre-pulling Docker images..."
+  docker pull "$DOCKER_IMAGE_NODE" >/dev/null 2>&1 || warn "Failed to pull $DOCKER_IMAGE_NODE"
+  docker pull "$DOCKER_IMAGE_PYTHON" >/dev/null 2>&1 || warn "Failed to pull $DOCKER_IMAGE_PYTHON"
+  ok "Docker images ready"
 fi
+
+# ─────────────────────────────────────────────────────────────
+# 5. Firewall (optional)
+# ─────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────
 # Done

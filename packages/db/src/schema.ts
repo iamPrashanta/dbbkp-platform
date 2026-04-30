@@ -81,13 +81,20 @@ export const pipelineRuns = pgTable("pipeline_runs", {
 export const sites = pgTable("sites", {
   id: uuid("id").defaultRandom().primaryKey(),
   domain: varchar("domain", { length: 255 }).notNull().unique(),
+  type: varchar("type", { length: 20 }).notNull().default("static"), // static | node | python | php
   docRoot: text("doc_root").notNull(),
+  port: integer("port"), // Internal port for the app
+  pm2Name: varchar("pm2_name", { length: 100 }), // PM2 process name
+  buildCommand: text("build_command"),
+  startCommand: text("start_command"),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
   phpVersion: varchar("php_version", { length: 10 }).default("8.2"),
   sslEnabled: boolean("ssl_enabled").default(false),
   sslExpiry: timestamp("ssl_expiry"),
   nginxConfig: text("nginx_config"),
   active: boolean("active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 // ─── DB INSTANCES ─────────────────────────────────────────────────────────────
@@ -100,6 +107,14 @@ export const dbInstances = pgTable("db_instances", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── PIPELINE LOGS ──────────────────────────────────────────────────────────
+export const pipelineLogs = pgTable("pipeline_logs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  runId: uuid("run_id").notNull().references(() => pipelineRuns.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -107,4 +122,5 @@ export type Server = typeof servers.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type Pipeline = typeof pipelines.$inferSelect;
 export type PipelineRun = typeof pipelineRuns.$inferSelect;
+export type PipelineLog = typeof pipelineLogs.$inferSelect;
 export type Site = typeof sites.$inferSelect;

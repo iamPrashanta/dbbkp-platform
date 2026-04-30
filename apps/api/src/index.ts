@@ -12,6 +12,7 @@ import { broadcastLog, setupLogWebSocketServer } from "./ws/logs";
 
 // REST routes
 import authRouter from "./routes/auth";
+import sitesRouter from "./routes/sites";
 import backupRouterLegacy from "./routes/backup";
 import infraRouterLegacy from "./routes/infra";
 
@@ -20,10 +21,13 @@ const app = express();
 // ─── Middleware ─────────────────────────────────────────────
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
-app.use(morgan("dev")); // logging
+app.use(morgan("dev", {
+  skip: (req) => req.url === "/internal/log"
+}));
 
 // ─── REST Auth (legacy support) ─────────────────────────────
 app.use("/api/auth", authRouter);
+app.use("/api/sites", sitesRouter);
 
 // ─── tRPC ──────────────────────────────────────────────────
 app.use(
