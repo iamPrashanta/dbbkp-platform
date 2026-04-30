@@ -24,12 +24,9 @@ export default function TRPCProvider({ children }: { children: React.ReactNode }
               const token = localStorage.getItem("token");
               return {
                 authorization: token ? `Bearer ${token}` : undefined,
-                "x-last-activity": Date.now().toString(),
               };
             }
-            return {
-              "x-last-activity": Date.now().toString(),
-            };
+            return {};
           },
         }),
       ],

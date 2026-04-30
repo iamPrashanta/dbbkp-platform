@@ -53,6 +53,15 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/internal/log", (req, res) => {
+  const internalSecret = process.env.INTERNAL_SECRET || "dbbkp-internal-secret-change-me";
+  const providedKey = req.headers["x-internal-key"];
+
+  if (providedKey !== internalSecret) {
+    console.warn(`[Security] Unauthorized attempt to /internal/log from ${req.ip}`);
+    res.status(403).json({ error: "Forbidden: Invalid internal key" });
+    return;
+  }
+
   const { jobId, message, type } = req.body ?? {};
   if (!jobId || typeof message !== "string") {
     res.status(400).json({ error: "jobId and message are required" });

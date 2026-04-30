@@ -28,10 +28,15 @@ const dockerNetwork = process.env.PIPELINE_DOCKER_NETWORK || "bridge";
 
 async function sendLog(jobId: string, msg: string, type: "log" | "error" | "done" = "log") {
   const apiPort = process.env.API_PORT || process.env.PORT || "4000";
+  const internalSecret = process.env.INTERNAL_SECRET || "dbbkp-internal-secret-change-me";
+  
   try {
     await fetch(`http://localhost:${apiPort}/internal/log`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "x-internal-key": internalSecret
+      },
       body: JSON.stringify({ jobId, message: msg, type }),
     }).catch(() => undefined);
   } catch {

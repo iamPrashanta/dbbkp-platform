@@ -15,6 +15,7 @@ async function seed() {
       email: "admin@dbbkp.local",
       passwordHash: passwordHash,
       role: "admin",
+      mustChangePassword: true,
     }).onConflictDoNothing();
 
     console.log("✅ Admin user seeded (admin / admin123)");

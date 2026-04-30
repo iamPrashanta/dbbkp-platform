@@ -1,9 +1,10 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { db, users } from "@dbbkp/db";
+import { db, users, sessions } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import crypto from "node:crypto";
 
 const router = Router();
 
@@ -29,15 +30,37 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
+    // 1. Create Session in DB
+    const sessionId = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    await db.insert(sessions).values({
+      id: sessionId,
+      userId: user.id,
+      expiresAt,
+    });
+
+    // 2. Generate JWT with Session ID
     const token = jwt.sign(
-      { sub: user.id, username: user.username, role: user.role },
+      { 
+        sub: user.id, 
+        sid: sessionId, 
+        username: user.username, 
+        role: user.role 
+      },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES } as jwt.SignOptions
     );
 
     return res.json({
       token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role },
+      user: { 
+        id: user.id, 
+        username: user.username, 
+        email: user.email, 
+        role: user.role,
+        mustChangePassword: user.mustChangePassword 
+      },
     });
   } catch (err: any) {
     if (err?.name === "ZodError") return res.status(400).json({ error: "Invalid request body" });

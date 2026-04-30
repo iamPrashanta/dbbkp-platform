@@ -15,6 +15,16 @@ export const users = pgTable("users", {
   username: varchar("username", { length: 100 }).notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   role: varchar("role", { length: 20 }).notNull().default("user"), // admin | user
+  mustChangePassword: boolean("must_change_password").default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ─── SESSIONS (Auth & Activity) ─────────────────────────────────────────────
+export const sessions = pgTable("sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  lastActivityAt: timestamp("last_activity_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -127,3 +137,4 @@ export type Pipeline = typeof pipelines.$inferSelect;
 export type PipelineRun = typeof pipelineRuns.$inferSelect;
 export type PipelineLog = typeof pipelineLogs.$inferSelect;
 export type Site = typeof sites.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
