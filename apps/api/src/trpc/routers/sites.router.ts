@@ -1,23 +1,28 @@
 import { z } from "zod";
 import { router, publicProcedure } from "../trpc";
 import { db, sites } from "@dbbkp/db";
-import { eq, desc } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getFreePort } from "../../services/port-manager";
 import { hostingQueue } from "../../queues";
-import path from "path";
 import crypto from "node:crypto";
 
-// Helper to sanitize DB inputs (Postgres doesn't allow undefined)
-function clean<T extends Record<string, any>>(obj: T): T {
-  return Object.fromEntries(
-    Object.entries(obj).map(([k, v]) => [k, v === undefined ? null : v])
-  ) as T;
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
+
+function safePayload<T extends Record<string, any>>(obj: T): T {
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) {
+      throw new Error(`[DB Guard:Sites] Undefined value detected for key: "${key}"`);
+    }
+  }
+  return obj;
 }
+
+// ─── ROUTER ──────────────────────────────────────────────────────────────────
 
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
   list: publicProcedure.query(async () => {
-    return db.select().from(sites).orderBy(desc(sites.createdAt));
+    return db.select().from(sites).orderBy(sql`created_at DESC`);
   }),
 
   // ─── Create Site ───────────────────────────────────────────────────────────
@@ -37,15 +42,11 @@ export const sitesRouter = router({
         const siteId = crypto.randomUUID();
         const docRoot = `/var/www/sites/${siteId}`;
         
-        // Allocate port if not static
-        console.log(`[Sites:Create] Allocating port for ${input.runtime}...`);
         const port = input.runtime === "static" ? null : await getFreePort();
-        console.log(`[Sites:Create] Allocated port: ${port}`);
 
-        console.log(`[Sites:Create] Inserting into DB...`);
         const [newSite] = await db
           .insert(sites)
-          .values(clean({
+          .values(safePayload({
             id: siteId,
             domain: input.domain,
             type: input.runtime,
@@ -58,8 +59,6 @@ export const sitesRouter = router({
           }))
           .returning();
 
-        // Enqueue deployment job
-        console.log(`[Sites:Create] Enqueueing hosting job...`);
         await hostingQueue.add("deploy-site", { 
           siteId: newSite.id,
           source: input.source,
@@ -67,7 +66,6 @@ export const sitesRouter = router({
           branch: input.branch
         });
 
-        console.log(`[Sites:Create] Success! SiteID: ${newSite.id}`);
         return newSite;
       } catch (err: any) {
         console.error(`[Sites:Create] FAILED:`, err);
