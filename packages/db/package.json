@@ -11,6 +11,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/seed.ts",
+    "db:reset-admin": "tsx src/reset-admin.ts",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {

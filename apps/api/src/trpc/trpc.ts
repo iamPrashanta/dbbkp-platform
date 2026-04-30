@@ -7,7 +7,13 @@ import { eq } from "drizzle-orm";
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
 export type Context = {
-  user: { sub: string; sid: string; username: string; role: string } | null;
+  user: { 
+    sub: string; 
+    sid: string; 
+    username: string; 
+    role: string;
+    mustChangePassword: boolean;
+  } | null;
 };
 
 export function createContext({ req }: { req: any }): Context {
@@ -27,6 +33,7 @@ export function createContext({ req }: { req: any }): Context {
         sid: payload.sid,
         username: payload.username,
         role: payload.role,
+        mustChangePassword: !!payload.mcp, // We'll use 'mcp' short key in JWT
       },
     };
   } catch {
@@ -39,12 +46,21 @@ const t = initTRPC.context<Context>().create();
 export const router = t.router;
 export const publicProcedure = t.procedure;
 
-export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
+export const protectedProcedure = t.procedure.use(async ({ ctx, next, path }) => {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED" });
   }
 
-  // 1. Fetch Session from DB (Source of Truth)
+  // 1. Mandatory Password Rotation Enforcement
+  // Allow only the password change mutation if mcp is flagged
+  if (ctx.user.mustChangePassword && path !== "auth.changePassword") {
+    throw new TRPCError({ 
+      code: "FORBIDDEN", 
+      message: "PASSWORD_ROTATION_REQUIRED" 
+    });
+  }
+
+  // 2. Fetch Session from DB (Source of Truth)
   const [session] = await db
     .select()
     .from(sessions)
@@ -57,13 +73,13 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
 
   const now = new Date();
 
-  // 2. Absolute Expiry Check
+  // 3. Absolute Expiry Check
   if (session.expiresAt < now) {
     await db.delete(sessions).where(eq(sessions.id, session.id));
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Session expired" });
   }
 
-  // 3. Idle Inactivity Check (30 minutes)
+  // 4. Idle Inactivity Check (30 minutes)
   const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
   if (now.getTime() - session.lastActivityAt.getTime() > IDLE_TIMEOUT_MS) {
     await db.delete(sessions).where(eq(sessions.id, session.id));
@@ -73,7 +89,7 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
     });
   }
 
-  // 4. Update Activity
+  // 5. Update Activity
   await db.update(sessions)
     .set({ lastActivityAt: now })
     .where(eq(sessions.id, session.id));

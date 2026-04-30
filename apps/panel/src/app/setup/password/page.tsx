@@ -3,18 +3,22 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { trpc } from "@/utils/trpc";
-import { Shield, Lock, User, Loader2 } from "lucide-react";
+import { Shield, Lock, Loader2, AlertTriangle } from "lucide-react";
+import { useAuth } from "@/components/AuthProvider";
 
-export default function LoginPage() {
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+export default function PasswordSetupPage() {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const router = useRouter();
+  const { logout } = useAuth();
 
-  const login = trpc.auth.login.useMutation({
-    onSuccess: (data) => {
-      localStorage.setItem("token", data.token);
-      router.push("/");
+  const changePassword = trpc.auth.changePassword.useMutation({
+    onSuccess: () => {
+      // Password changed successfully, session revoked by backend
+      // We must log out and re-login
+      logout();
+      router.push("/login?message=Password updated. Please login again.");
     },
     onError: (err) => {
       setError(err.message);
@@ -24,44 +28,45 @@ export default function LoginPage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    login.mutate({ username, password });
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters long");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
+
+    changePassword.mutate({ newPassword: password });
   };
 
   return (
-    <main className="login-page">
-      <div className="login-card glass">
-        <div className="login-header">
-          <div className="logo-box">
-            <Shield size={32} className="text-primary" />
+    <main className="setup-page">
+      <div className="setup-card glass">
+        <div className="setup-header">
+          <div className="icon-box">
+            <Lock size={32} className="text-warning" />
           </div>
-          <h1>DBBKP Platform</h1>
-          <p>Next-generation infrastructure control plane</p>
+          <h1>Security Setup</h1>
+          <p>Your account was created with a temporary password. Please set a new secure password to continue.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="login-form">
-          <div className="form-group">
-            <label>Username</label>
-            <div className="input-wrapper">
-              <User size={18} className="input-icon" />
-              <input
-                type="text"
-                className="input"
-                placeholder="Enter username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-              />
-            </div>
-          </div>
+        <div className="alert-warning">
+          <AlertTriangle size={18} />
+          <span>This action will sign you out of all sessions.</span>
+        </div>
 
+        <form onSubmit={handleSubmit} className="setup-form">
           <div className="form-group">
-            <label>Password</label>
+            <label>New Password</label>
             <div className="input-wrapper">
               <Lock size={18} className="input-icon" />
               <input
                 type="password"
                 className="input"
-                placeholder="Enter password"
+                placeholder="Minimum 8 characters"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -69,28 +74,39 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {error && <div className="login-error">{error}</div>}
+          <div className="form-group">
+            <label>Confirm Password</label>
+            <div className="input-wrapper">
+              <Lock size={18} className="input-icon" />
+              <input
+                type="password"
+                className="input"
+                placeholder="Repeat new password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+
+          {error && <div className="setup-error">{error}</div>}
 
           <button
             type="submit"
-            className="btn btn-primary login-submit"
-            disabled={login.isLoading}
+            className="btn btn-primary setup-submit"
+            disabled={changePassword.isLoading}
           >
-            {login.isLoading ? (
+            {changePassword.isLoading ? (
               <Loader2 className="spin" size={20} />
             ) : (
-              "Sign In"
+              "Update Password & Continue"
             )}
           </button>
         </form>
-
-        <div className="login-footer">
-          <p>&copy; 2026 DBBKP Infrastructure. All rights reserved.</p>
-        </div>
       </div>
 
       <style jsx>{`
-        .login-page {
+        .setup-page {
           height: 100vh;
           display: flex;
           align-items: center;
@@ -99,17 +115,17 @@ export default function LoginPage() {
           padding: 20px;
         }
 
-        .login-card {
+        .setup-card {
           width: 100%;
-          max-width: 440px;
+          max-width: 480px;
           padding: 3rem;
           display: flex;
           flex-direction: column;
-          gap: 2.5rem;
+          gap: 2rem;
           box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
         }
 
-        .login-header {
+        .setup-header {
           text-align: center;
           display: flex;
           flex-direction: column;
@@ -117,10 +133,10 @@ export default function LoginPage() {
           gap: 1rem;
         }
 
-        .logo-box {
+        .icon-box {
           width: 64px;
           height: 64px;
-          background: rgba(59, 130, 246, 0.1);
+          background: rgba(245, 158, 11, 0.1);
           border-radius: 16px;
           display: flex;
           align-items: center;
@@ -128,18 +144,31 @@ export default function LoginPage() {
           margin-bottom: 0.5rem;
         }
 
-        .login-header h1 {
+        .setup-header h1 {
           font-size: 1.75rem;
           font-weight: 800;
           letter-spacing: -0.03em;
         }
 
-        .login-header p {
+        .setup-header p {
           color: var(--text-muted);
           font-size: 0.95rem;
+          line-height: 1.6;
         }
 
-        .login-form {
+        .alert-warning {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 0.75rem 1rem;
+          background: rgba(245, 158, 11, 0.1);
+          color: var(--warning);
+          border-radius: var(--radius);
+          font-size: 0.85rem;
+          border: 1px solid rgba(245, 158, 11, 0.2);
+        }
+
+        .setup-form {
           display: flex;
           flex-direction: column;
           gap: 1.5rem;
@@ -178,13 +207,13 @@ export default function LoginPage() {
           font-size: 1rem;
         }
 
-        .login-submit {
+        .setup-submit {
           height: 48px;
           font-size: 1rem;
           margin-top: 0.5rem;
         }
 
-        .login-error {
+        .setup-error {
           padding: 10px;
           background: rgba(239, 68, 68, 0.1);
           color: var(--error);
@@ -192,12 +221,6 @@ export default function LoginPage() {
           font-size: 0.85rem;
           text-align: center;
           border: 1px solid rgba(239, 68, 68, 0.2);
-        }
-
-        .login-footer {
-          text-align: center;
-          color: var(--text-muted);
-          font-size: 0.8rem;
         }
       `}</style>
     </main>

@@ -16,16 +16,17 @@ function deepClean(obj: any): any {
   if (obj === null) return null;
 
   if (Array.isArray(obj)) {
-    return obj.map(deepClean);
+    return obj
+      .filter((v) => v !== undefined) // Strip undefined from arrays
+      .map(deepClean);
   }
 
   if (typeof obj === "object" && obj !== null) {
-    // If it's a Date, return as is (don't convert to object entries)
     if (obj instanceof Date) return obj;
 
     return Object.fromEntries(
       Object.entries(obj)
-        .filter(([_, v]) => v !== undefined)
+        .filter(([_, v]) => v !== undefined) // Strip undefined from objects
         .map(([k, v]) => [k, deepClean(v)])
     );
   }
