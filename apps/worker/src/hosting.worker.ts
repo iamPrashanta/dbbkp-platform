@@ -76,9 +76,15 @@ export const hostingWorker = new Worker(
         const buildContainer = await docker.createContainer({
           Image: buildImage,
           Tty: true,
-          HostConfig: { Binds: [`${docRoot}:/app`] },
+          HostConfig: { 
+            Binds: [
+              `${docRoot}:/app`,
+              "/app/node_modules", // Anonymous volume for build speed and permissions
+              "/app/.venv"         // Support python venvs too
+            ] 
+          },
           WorkingDir: "/app",
-          Cmd: ["sh", "-c", `chmod -R 777 /app || true && ${installCmd}`],
+          Cmd: ["sh", "-c", installCmd],
           User: "0:0",
         });
 
@@ -118,7 +124,11 @@ export const hostingWorker = new Worker(
             StartPeriod: 15 * 1000000000, // 15s grace
           },
           HostConfig: {
-            Binds: [`${docRoot}:/app`],
+            Binds: [
+              `${docRoot}:/app`,
+              "/app/node_modules",
+              "/app/.venv"
+            ],
             PortBindings: { [`${port}/tcp`]: [{ HostPort: String(port) }] },
             RestartPolicy: { Name: "always" },
             Memory: 512 * 1024 * 1024,
@@ -127,7 +137,7 @@ export const hostingWorker = new Worker(
           },
           WorkingDir: "/app",
           Env: [`PORT=${port}`, `NODE_ENV=production`, `PYTHONUNBUFFERED=1`],
-          Cmd: ["sh", "-c", `chmod -R 777 /app || true && ${startCmd || ""}`],
+          Cmd: ["sh", "-c", startCmd || ""],
           User: "0:0",
         });
 

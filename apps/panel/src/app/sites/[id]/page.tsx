@@ -67,6 +67,15 @@ export default function SiteDetailPage() {
             </div>
           </div>
           <div className="header-actions">
+            {site.port && (
+              <a 
+                href={`http://localhost:${site.port}`} 
+                target="_blank" 
+                className="btn btn-outline"
+              >
+                Preview (Local)
+              </a>
+            )}
             <a 
               href={`http://${site.domain}`} 
               target="_blank" 

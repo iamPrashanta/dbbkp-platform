@@ -61,10 +61,21 @@ export default function SitesPage() {
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="btn btn-sm"
+                  title="Visit live domain"
                 >
                   <ExternalLink size={14} />
                   Visit
                 </a>
+                {site.port && (
+                  <a 
+                    href={`http://localhost:${site.port}`} 
+                    target="_blank" 
+                    className="btn btn-sm btn-outline"
+                    title="Preview on local port"
+                  >
+                    Preview
+                  </a>
+                )}
                 <Link href={`/sites/${site.id}`} className="btn btn-sm">
                   Manage
                 </Link>

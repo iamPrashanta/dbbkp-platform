@@ -179,28 +179,30 @@ async function runPipelineCommand(command: string, cwd: string, jobId: string, r
   // 3. Execution (Streaming)
   const envArgs = Object.keys(env).flatMap((key) => ["-e", `${key}=${env[key]}`]);
   
-  // Prepend permission fix to ensure tools like npm can always write to the mount
-  const hardenedCommand = `chmod -R 777 /workspace || true && ${finalCommand}`;
+  // Detect if cwd is a Docker volume or a host path
+  const isVolume = cwd.startsWith("dbbkp-ws-");
+  const volumeArg = isVolume ? `${cwd}:/workspace` : `${cwd}:/workspace`;
 
   const dockerArgs = [
     "run",
     "--rm",
     "--init",
-    "-u", "0:0", // Force root UID/GID for absolute write permission
+    "-u", "0:0", // Force root UID/GID
     "--network", dockerNetwork,
     "--memory", dockerMemory,
     "--cpus", dockerCpus,
     "--pids-limit", "256",
     "--security-opt", "no-new-privileges",
     "--cap-drop", "ALL",
-    "-v", `${cwd}:/workspace`,
+    "-v", volumeArg,
+    "-v", "/workspace/node_modules", // Anonymous volume for fast dependencies
     "-w", "/workspace",
     ...envArgs,
     image,
-    "sh", "-lc", hardenedCommand,
+    "sh", "-lc", finalCommand,
   ];
 
-  return streamProcess("docker", dockerArgs, cwd, jobId, runId, env);
+  return streamProcess("docker", dockerArgs, isVolume ? process.cwd() : cwd, jobId, runId, env);
 }
 
 export const pipelineWorker = new Worker<PipelineJobData>(
@@ -208,8 +210,7 @@ export const pipelineWorker = new Worker<PipelineJobData>(
   async (job) => {
     if (job.name !== "pipeline-run") return;
 
-    const { runId, dbJobId, repoUrl, branch, buildCommand, deployCommand, envVars = {} } = job.data;
-    const workDir = path.join(os.tmpdir(), `dbbkp-pipeline-${job.id}`);
+    const volumeName = `dbbkp-ws-${job.id}`;
     const jid = String(job.id);
     const startedAt = new Date();
 
@@ -224,25 +225,46 @@ export const pipelineWorker = new Worker<PipelineJobData>(
     await appendRunLog(runId, `Pipeline started: ${repoUrl} (${branch})\n`);
 
     try {
-      if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
-      fs.mkdirSync(workDir, { recursive: true });
-
-      const clone = await streamProcess("git", ["clone", "-b", branch, repoUrl, "."], workDir, jid, runId);
-      if (clone.code !== 0) {
-        throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
+      // 1. Prepare Docker Volume (Isolated Storage)
+      if (isolationMode === "docker") {
+        await sendLog(jid, `Provisioning isolated volume: ${volumeName}...\n`);
+        await execa("docker", ["volume", "create", volumeName]);
+      } else {
+        const workDir = path.join(os.tmpdir(), `dbbkp-pipeline-${job.id}`);
+        if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
+        fs.mkdirSync(workDir, { recursive: true });
       }
+
+      // 2. Clone (Inside container if dockerized)
+      if (isolationMode === "docker") {
+        await sendLog(jid, "Cloning repository into volume...\n");
+        const clone = await streamProcess(
+          "docker", 
+          ["run", "--rm", "-v", `${volumeName}:/workspace`, "-w", "/workspace", "alpine/git", "clone", "-b", branch, repoUrl, "."],
+          process.cwd(),
+          jid,
+          runId
+        );
+        if (clone.code !== 0) throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
+      } else {
+        const workDir = path.join(os.tmpdir(), `dbbkp-pipeline-${job.id}`);
+        const clone = await streamProcess("git", ["clone", "-b", branch, repoUrl, "."], workDir, jid, runId);
+        if (clone.code !== 0) throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
+      }
+
+      const workPath = isolationMode === "docker" ? volumeName : path.join(os.tmpdir(), `dbbkp-pipeline-${job.id}`);
 
       if (buildCommand) {
         await sendLog(jid, `\nRunning build in ${isolationMode}: ${buildCommand}\n`);
         await appendRunLog(runId, `\nRunning build in ${isolationMode}: ${buildCommand}\n`);
-        const build = await runPipelineCommand(buildCommand, workDir, jid, runId, envVars);
+        const build = await runPipelineCommand(buildCommand, workPath, jid, runId, envVars);
         if (build.code !== 0) throw new Error(`Build failed with exit code ${build.code}`);
       }
 
       if (deployCommand) {
         await sendLog(jid, `\nRunning deploy in ${isolationMode}: ${deployCommand}\n`);
         await appendRunLog(runId, `\nRunning deploy in ${isolationMode}: ${deployCommand}\n`);
-        const deploy = await runPipelineCommand(deployCommand, workDir, jid, runId, envVars);
+        const deploy = await runPipelineCommand(deployCommand, workPath, jid, runId, envVars);
         if (deploy.code !== 0) throw new Error(`Deploy failed with exit code ${deploy.code}`);
       }
 
@@ -284,10 +306,15 @@ export const pipelineWorker = new Worker<PipelineJobData>(
       });
       throw err;
     } finally {
-      try {
-        fs.rmSync(workDir, { recursive: true, force: true });
-      } catch {
-        // Best effort cleanup.
+      if (isolationMode === "docker") {
+        try {
+          await execa("docker", ["volume", "rm", "-f", volumeName]);
+        } catch {}
+      } else {
+        try {
+          const workDir = path.join(os.tmpdir(), `dbbkp-pipeline-${job.id}`);
+          fs.rmSync(workDir, { recursive: true, force: true });
+        } catch {}
       }
     }
   },
