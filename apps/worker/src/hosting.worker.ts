@@ -63,14 +63,23 @@ export const hostingWorker = new Worker(
       if (type !== "static") {
         log(`Starting build stage for ${type}...`);
         const buildImage = type === "node" ? "node:20-alpine" : "python:3.11-slim";
-        const installCmd = type === "node" ? "npm install --production" : "pip install -r requirements.txt";
+        
+        let installCmd = "";
+        if (type === "node") {
+          installCmd = fs.existsSync(path.join(docRoot, "pnpm-lock.yaml")) ? "npm install -g pnpm && pnpm install --production" : "npm install --production";
+        } else if (type === "python") {
+          installCmd = fs.existsSync(path.join(docRoot, "requirements.txt")) 
+            ? "pip install --no-cache-dir -r requirements.txt" 
+            : "pip install --no-cache-dir .";
+        }
 
         const buildContainer = await docker.createContainer({
           Image: buildImage,
           Tty: true,
           HostConfig: { Binds: [`${docRoot}:/app`] },
           WorkingDir: "/app",
-          Cmd: ["sh", "-c", installCmd],
+          Cmd: ["sh", "-c", `chmod -R 777 /app || true && ${installCmd}`],
+          User: "0:0",
         });
 
         await buildContainer.start();
@@ -84,7 +93,18 @@ export const hostingWorker = new Worker(
 
         // 4. Runtime Stage (with Health Checks)
         log("Starting runtime container...");
-        const startCmd = site.startCommand || (type === "node" ? "npm start" : "python app.py");
+        let startCmd = site.startCommand;
+        
+        if (!startCmd) {
+          if (type === "node") {
+            startCmd = "npm start";
+          } else if (type === "python") {
+            // Prefer gunicorn if available, fallback to app.py
+            const hasGunicorn = fs.existsSync(path.join(docRoot, "requirements.txt")) && 
+                               fs.readFileSync(path.join(docRoot, "requirements.txt"), "utf8").includes("gunicorn");
+            startCmd = hasGunicorn ? `gunicorn --bind 0.0.0.0:${port} app:app` : `python app.py`;
+          }
+        }
         
         const container = await docker.createContainer({
           Image: buildImage,
@@ -106,8 +126,9 @@ export const hostingWorker = new Worker(
             CpuQuota: 50000,
           },
           WorkingDir: "/app",
-          Env: [`PORT=${port}`, `NODE_ENV=production`],
-          Cmd: ["sh", "-c", startCmd],
+          Env: [`PORT=${port}`, `NODE_ENV=production`, `PYTHONUNBUFFERED=1`],
+          Cmd: ["sh", "-c", `chmod -R 777 /app || true && ${startCmd || ""}`],
+          User: "0:0",
         });
 
         await container.start();

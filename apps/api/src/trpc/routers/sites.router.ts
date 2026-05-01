@@ -1,10 +1,13 @@
 import { z } from "zod";
-import { router, publicProcedure } from "../trpc";
+import { router, protectedProcedure, adminProcedure } from "../trpc";
 import { db, sites } from "@dbbkp/db";
 import { eq, sql } from "drizzle-orm";
 import { getFreePort } from "../../services/port-manager";
 import { hostingQueue } from "../../queues";
 import crypto from "node:crypto";
+import Docker from "dockerode";
+
+const docker = new Docker();
 
 // ─── UTILITIES (HARDENED) ────────────────────────────────────────────────────
 
@@ -37,18 +40,18 @@ function assertClean<T extends Record<string, any>>(obj: T): T {
 
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
-  list: publicProcedure.query(async () => {
+  list: protectedProcedure.query(async () => {
     return db.select().from(sites).orderBy(sql`created_at DESC`);
   }),
 
   // ─── Create Site ───────────────────────────────────────────────────────────
-  create: publicProcedure
+  create: adminProcedure
     .input(
       z.object({
         domain: z.string(),
         runtime: z.enum(["static", "node", "python"]),
-        source: z.enum(["git"]),
-        repoUrl: z.string(),
+        source: z.enum(["git", "zip"]),
+        repoUrl: z.string().optional(),
         branch: z.string().default("main"),
       })
     )
@@ -69,18 +72,20 @@ export const sitesRouter = router({
             docRoot,
             port,
             source: input.source,
-            repoUrl: input.repoUrl,
+            repoUrl: input.repoUrl ?? null,
             branch: input.branch,
             status: "provisioning",
           }))
           .returning();
 
-        await hostingQueue.add("deploy-site", { 
-          siteId: newSite.id,
-          source: input.source,
-          repoUrl: input.repoUrl,
-          branch: input.branch
-        });
+        if (input.source === "git") {
+          await hostingQueue.add("deploy-site", { 
+            siteId: newSite.id,
+            source: input.source,
+            repoUrl: input.repoUrl,
+            branch: input.branch
+          });
+        }
 
         return newSite;
       } catch (err: any) {
@@ -90,14 +95,66 @@ export const sitesRouter = router({
     }),
 
   // ─── Get Site Status ───────────────────────────────────────────────────────
-  getStatus: publicProcedure
-    .input(z.object({ siteId: z.string() }))
+  get: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
     .query(async ({ input }) => {
       const [site] = await db
         .select()
         .from(sites)
-        .where(eq(sites.id, input.siteId))
+        .where(eq(sites.id, input.id))
         .limit(1);
       return site;
+    }),
+
+  // ─── Delete Site ───────────────────────────────────────────────────────────
+  delete: adminProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      const [site] = await db.select().from(sites).where(eq(sites.id, input.id)).limit(1);
+      if (!site) return { success: false };
+
+      // 1. Cleanup Docker
+      if (site.pm2Name) {
+        try {
+          const container = docker.getContainer(site.pm2Name);
+          await container.stop().catch(() => {});
+          await container.remove().catch(() => {});
+        } catch {}
+      }
+
+      // 2. Delete from DB
+      await db.delete(sites).where(eq(sites.id, input.id));
+      return { success: true };
+    }),
+
+  // ─── Stats (CPU/RAM) ───────────────────────────────────────────────────────
+  stats: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const [site] = await db.select().from(sites).where(eq(sites.id, input.id)).limit(1);
+      if (!site || !site.pm2Name) return null;
+
+      try {
+        const container = docker.getContainer(site.pm2Name);
+        const stats = await container.stats({ stream: false });
+        
+        // Calculate CPU %
+        const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
+        const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
+        const cpuPercent = systemDelta > 0 ? (cpuDelta / systemDelta) * stats.cpu_stats.online_cpus * 100 : 0;
+
+        // Calculate RAM %
+        const usedMemory = stats.memory_stats.usage - (stats.memory_stats.stats?.cache || 0);
+        const ramPercent = (usedMemory / stats.memory_stats.limit) * 100;
+
+        return {
+          cpu: Math.min(100, Math.max(0, cpuPercent)),
+          ram: Math.min(100, Math.max(0, ramPercent)),
+          memoryUsed: usedMemory,
+          memoryLimit: stats.memory_stats.limit,
+        };
+      } catch {
+        return null;
+      }
     }),
 });

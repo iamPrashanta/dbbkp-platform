@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Database, Play, RefreshCw, ShieldCheck, Workflow } from "lucide-react";
+import { Activity, Database, Play, RefreshCw, ShieldCheck, Workflow, Trash2 } from "lucide-react";
 import React, { useMemo, useState } from "react";
 import { PipelineForm } from "@/components/PipelineForm";
 import { PipelineTimeline } from "@/components/PipelineTimeline";
@@ -46,6 +46,10 @@ export default function DashboardPage() {
       setSelectedRunId(data.runId);
       await utils.pipeline.dashboard.invalidate();
     },
+  });
+
+  const deletePipeline = trpc.pipeline.delete.useMutation({
+    onSuccess: () => utils.pipeline.dashboard.invalidate(),
   });
 
   const queryError = query.error as { data?: { code?: string } } | null;
@@ -101,14 +105,28 @@ export default function DashboardPage() {
                     <strong>{pipeline.name}</strong>
                     <span>{pipeline.repoUrl}</span>
                   </div>
-                  <button
-                    className="icon-btn run-btn"
-                    title="Run pipeline"
-                    disabled={runPipeline.isLoading || !pipeline.enabled}
-                    onClick={() => runPipeline.mutate({ id: pipeline.id })}
-                  >
-                    <Play size={16} />
-                  </button>
+                  <div className="pipeline-actions">
+                    <button
+                      className="icon-btn run-btn"
+                      title="Run pipeline"
+                      disabled={runPipeline.isLoading || !pipeline.enabled}
+                      onClick={() => runPipeline.mutate({ id: pipeline.id })}
+                    >
+                      <Play size={16} />
+                    </button>
+                    <button
+                      className="icon-btn delete-btn"
+                      title="Delete pipeline"
+                      disabled={deletePipeline.isLoading}
+                      onClick={async () => {
+                        if (confirm(`Delete pipeline ${pipeline.name}?`)) {
+                          await deletePipeline.mutateAsync({ id: pipeline.id });
+                        }
+                      }}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
               ))
             )}

@@ -8,8 +8,10 @@ import { eq } from "drizzle-orm";
 import { getFreePort } from "../services/port-manager";
 import { hostingQueue } from "../queues";
 
+import os from "os";
+
 const router = express.Router();
-const upload = multer({ dest: "/tmp/dbbkp-uploads/" });
+const upload = multer({ dest: path.join(os.tmpdir(), "dbbkp-uploads") });
 
 // ─── POST /api/sites/upload ──────────────────────────────────────────────────
 // Auth disabled temporarily as requested for dev speed

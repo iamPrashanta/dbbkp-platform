@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Globe, Plus, ExternalLink, Activity, Terminal } from "lucide-react";
+import { Globe, Plus, ExternalLink, Activity, Terminal, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { trpc } from "@/utils/trpc";
 
@@ -9,6 +9,8 @@ export default function SitesPage() {
   const query = trpc.sites.list.useQuery(undefined, {
     refetchInterval: 5000,
   });
+
+  const deleteMutation = trpc.sites.delete.useMutation();
 
   return (
     <main className="panel-container">
@@ -63,8 +65,20 @@ export default function SitesPage() {
                   <ExternalLink size={14} />
                   Visit
                 </a>
-                <button className="btn btn-sm">
+                <Link href={`/sites/${site.id}`} className="btn btn-sm">
                   Manage
+                </Link>
+                <button 
+                  className="btn btn-sm btn-danger"
+                  onClick={async () => {
+                    if (confirm(`Delete site ${site.domain}? This cannot be undone.`)) {
+                      await deleteMutation.mutateAsync({ id: site.id });
+                      query.refetch();
+                    }
+                  }}
+                  disabled={deleteMutation.isLoading}
+                >
+                  <Trash2 size={14} />
                 </button>
               </div>
             </div>

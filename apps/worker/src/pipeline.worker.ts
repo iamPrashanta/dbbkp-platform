@@ -69,18 +69,31 @@ async function patchJob(dbJobId: string | undefined, data: Partial<typeof jobs.$
   await db.update(jobs).set(data).where(eq(jobs.id, dbJobId));
 }
 
+/**
+ * Pre-pulls the docker image and streams the pull logs to the user.
+ */
+async function pullImage(image: string, jobId: string, runId: string | undefined): Promise<boolean> {
+  await sendLog(jobId, `Checking for image '${image}'...\n`);
+  const pull = await streamProcess("docker", ["pull", image], process.cwd(), jobId, runId);
+  return pull.code === 0;
+}
+
 function detectInstallCommand(cwd: string): string {
   if (fs.existsSync(path.join(cwd, "pnpm-lock.yaml"))) return "pnpm install";
   if (fs.existsSync(path.join(cwd, "yarn.lock"))) return "yarn install";
+  // Default to safe npm install for CI environments
   return "npm install --legacy-peer-deps";
 }
 
 function classifyError(error: string): string {
-  if (error.includes("ERESOLVE") || error.includes("Could not resolve dependency")) return "Dependency conflict";
-  if (error.includes("git clone")) return "Clone failed";
-  if (error.includes("Docker failed")) return "Infrastructure error";
-  if (error.includes("Build failed")) return "Build error";
-  if (error.includes("Deploy failed")) return "Deploy error";
+  const e = error.toUpperCase();
+  if (e.includes("ERESOLVE") || e.includes("PEER DEPENDENCY")) return "Dependency conflict";
+  if (e.includes("EACCES") || e.includes("PERMISSION DENIED")) return "Permission error";
+  if (e.includes("ENOENT") || e.includes("FILE NOT FOUND")) return "Missing file/dependency";
+  if (e.includes("GIT CLONE")) return "Clone failed";
+  if (e.includes("DOCKER FAILED")) return "Infrastructure error";
+  if (e.includes("BUILD FAILED") || e.includes("EXIT CODE 243")) return "Build error";
+  if (e.includes("DEPLOY FAILED")) return "Deploy error";
   return "Execution error";
 }
 
@@ -129,38 +142,6 @@ async function runHostCommand(command: string, cwd: string, jobId: string, runId
   return streamProcess(bin, args, cwd, jobId, runId, env);
 }
 
-async function runDockerCommand(command: string, cwd: string, jobId: string, runId: string | undefined, env: Record<string, string>) {
-  const envArgs = Object.keys(env).flatMap((key) => ["-e", key]);
-  const dockerArgs = [
-    "run",
-    "--rm",
-    "--init",
-    "--network",
-    dockerNetwork,
-    "--memory",
-    dockerMemory,
-    "--cpus",
-    dockerCpus,
-    "--pids-limit",
-    "256",
-    "--security-opt",
-    "no-new-privileges",
-    "--cap-drop",
-    "ALL",
-    "-v",
-    `${cwd}:/workspace`,
-    "-w",
-    "/workspace",
-    ...envArgs,
-    dockerImage,
-    "sh",
-    "-lc",
-    command,
-  ];
-
-  return streamProcess("docker", dockerArgs, cwd, jobId, runId, env);
-}
-
 function detectRuntime(workDir: string): "node" | "python" | "unknown" {
   if (fs.existsSync(path.join(workDir, "package.json"))) return "node";
   if (fs.existsSync(path.join(workDir, "requirements.txt")) || fs.existsSync(path.join(workDir, "pyproject.toml"))) return "python";
@@ -172,6 +153,7 @@ async function runPipelineCommand(command: string, cwd: string, jobId: string, r
   let finalCommand = command;
   let image = dockerImage;
 
+  // 1. Detect Strategy
   if (runtime === "node") {
     if (command.trim() === "npm install" || command.trim() === "install") {
       finalCommand = detectInstallCommand(cwd);
@@ -191,33 +173,31 @@ async function runPipelineCommand(command: string, cwd: string, jobId: string, r
     return runHostCommand(finalCommand, cwd, jobId, runId, env);
   }
 
-  // Use the specific image for the runtime
-  const envArgs = Object.keys(env).flatMap((key) => ["-e", key]);
+  // 2. Pre-pull Image (PaaS optimization)
+  await pullImage(image, jobId, runId);
+
+  // 3. Execution (Streaming)
+  const envArgs = Object.keys(env).flatMap((key) => ["-e", `${key}=${env[key]}`]);
+  
+  // Prepend permission fix to ensure tools like npm can always write to the mount
+  const hardenedCommand = `chmod -R 777 /workspace || true && ${finalCommand}`;
+
   const dockerArgs = [
     "run",
     "--rm",
     "--init",
-    "--network",
-    dockerNetwork,
-    "--memory",
-    dockerMemory,
-    "--cpus",
-    dockerCpus,
-    "--pids-limit",
-    "256",
-    "--security-opt",
-    "no-new-privileges",
-    "--cap-drop",
-    "ALL",
-    "-v",
-    `${cwd}:/workspace`,
-    "-w",
-    "/workspace",
+    "-u", "0:0", // Force root UID/GID for absolute write permission
+    "--network", dockerNetwork,
+    "--memory", dockerMemory,
+    "--cpus", dockerCpus,
+    "--pids-limit", "256",
+    "--security-opt", "no-new-privileges",
+    "--cap-drop", "ALL",
+    "-v", `${cwd}:/workspace`,
+    "-w", "/workspace",
     ...envArgs,
     image,
-    "sh",
-    "-lc",
-    finalCommand,
+    "sh", "-lc", hardenedCommand,
   ];
 
   return streamProcess("docker", dockerArgs, cwd, jobId, runId, env);

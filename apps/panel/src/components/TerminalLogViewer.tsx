@@ -1,6 +1,6 @@
 "use client";
 
-import { Pause, Play, RotateCcw, Terminal } from "lucide-react";
+import { Copy, Check, Pause, Play, RotateCcw, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { usePipelineLogs } from "@/utils/pipelineLogs";
 
@@ -11,8 +11,16 @@ type Props = {
 
 export function TerminalLogViewer({ jobId, initialLog }: Props) {
   const [autoScroll, setAutoScroll] = useState(true);
+  const [copied, setCopied] = useState(false);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const { lines, status } = usePipelineLogs(jobId, initialLog);
+
+  const copyLogs = () => {
+    const text = lines.map(l => `[${new Date(l.ts).toLocaleTimeString()}] ${l.message}`).join("\n");
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   useEffect(() => {
     if (!autoScroll || !viewportRef.current) return;
@@ -28,6 +36,9 @@ export function TerminalLogViewer({ jobId, initialLog }: Props) {
           <span className={`connection-dot ${status}`} />
         </div>
         <div className="terminal-actions">
+          <button className="icon-btn" title="Copy logs" onClick={copyLogs}>
+            {copied ? <Check size={15} className="text-good" /> : <Copy size={15} />}
+          </button>
           <button className="icon-btn" title={autoScroll ? "Pause auto-scroll" : "Resume auto-scroll"} onClick={() => setAutoScroll((value) => !value)}>
             {autoScroll ? <Pause size={15} /> : <Play size={15} />}
           </button>
