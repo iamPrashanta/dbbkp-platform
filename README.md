@@ -1,66 +1,488 @@
-# Infrastructure Management & Security Platform
+# 🚀 DBBKP Platform — Infrastructure Orchestration + PaaS Control Plane
 
-This is a **modern, distributed infrastructure orchestration and security platform**. It consists of an event-driven automation backend, a fleet of autonomous Bash-based agents (`infra-agent` & `dbbkp`), and a centralized GUI for managing server health, malware defense, and database snapshots across multiple remote nodes.
+A **distributed infrastructure orchestration, security automation, and deployment platform** that acts as a unified control plane for managing servers at scale.
 
----
+It combines:
 
-## 🏗️ Architecture overview
+* ⚙️ Autonomous security + backup agents
+* 🧠 Event-driven control plane (Node.js + Redis + Workers)
+* 🌐 PaaS deployment engine (pipelines + containers)
+* 📊 Centralized dashboard (Next.js)
 
-The platform is designed around a strictly decoupled **Push Architecture** to handle high-concurrency environments without failure cascading.
-
-### 1. The Autonomous Agents
-
-The heavy lifting on the servers is handled by lightweight, native Bash agents that run autonomously via `cron`.
-
-- **`infra-agent.sh`**: The security scanner. It calculates risk scores, identifies malware (PHP shells, backdoors), enforces strict folder permissions, blocks malicious IPs via `ufw`, and quarantines threats. Instead of executing fixes blindly, it pushes structured JSON telemetry and events to a local Redis node.
-- **`dbbkp.sh`**: The backup engine. It supports remote MySQL/MariaDB database snapshots and filesystem tarballs, backing them up locally or streaming them securely.
-
-### 2. The Automation Worker (Node.js)
-
-Inside `apps/worker`, a BullMQ/Node.js worker listens asynchronously (`BLPOP`) to the Redis event stream (`infra:events`).
-
-- When `infra-agent` emits a `HIGH_RISK_DETECTED` event, the worker intercepts it.
-- It enforces rate limits and idempotency (using SHA-1 payload hashing) to prevent backup-spam during active attacks.
-- It dynamically spins up `dbbkp` in `--headless` mode to secure databases before any automated remediation occurs.
-
-### 3. The Dashboard (GUI)
-
-A unified interface (`apps/web` or `apps/api`) providing real-time visibility into the fleet. It visualizes the JSON reports pushed by the agents (`infra:report:<node_id>`), exposing memory metrics, top attack IPs, and pending quarantine reviews.
+👉 This is not just a hosting panel — it is a **programmable DevOps control plane**.
 
 ---
 
-## 🚀 How the Agent Sync Works
+# 🏗️ Architecture Overview
 
-Because the Bash agents are distributed independently, this monorepo uses an **automated synchronization layer** to ensure the platform always executes the latest agent code without manual copy-pasting or complex Git submodules.
+The platform follows a **decoupled, event-driven push architecture**, ensuring:
 
-During the initial `pnpm install`, the `postinstall` lifecycle hook runs `sync-scripts.js`. This script securely fetches the absolute latest versions of `dbbkp.sh` and `infra-agent.sh` directly from the `main` branch of the GitHub repository, dropping them into `scripts/`.
-
-The `@dbbkp/runner` package natively traverses the directory tree using `resolveScriptPath()`, ensuring that your application seamlessly detects the scripts, whether in production or local development.
-
----
-
-## 🔮 The Future Plan (Roadmap)
-
-The ultimate goal for this platform is to evolve into a **turnkey server orchestration and hosting panel**, allowing teams to manage vast fleets of servers from a single, unified interface.
-
-### Upcoming Milestones
-
-1. **Multi-Node Centralization**: Evolving the local Redis push models to stream metrics to a central Aggregator API, enabling a single dashboard to monitor hundreds of globally distributed servers.
-2. **One-Click Deployments & Migrations**: Expanding `dbbkp` to not just backup, but intelligently restore and migrate entire tech stacks (Nginx configs, PHP-FPM pools, MySQL databases) across servers effortlessly.
-3. **Anomaly Detection & Auto-Ban**: Integrating baseline memory profiling. If a server suddenly spikes in CPU or receives an influx of unexpected requests, the platform will automatically trigger an `ufw` or `fail2ban` network lockdown.
-4. **App Ecosystem Engine**: Transforming the core automation worker to support the 1-click installation of common applications (WordPress, Next.js, Laravel) with automatic SSL provisioning and reverse-proxy routing via Nginx/LiteSpeed.
-5. **Role-Based Quarantine Audits**: A feature within the GUI that allows administrators to manually review, restore, or securely purge files pushed into the `/var/quarantine/` layer by the `infra-agent`.
+* No cascading failures
+* High concurrency handling
+* Autonomous node behavior
+* Central orchestration without tight coupling
 
 ---
 
-## 🛠️ Getting Started
+## 1. 🛰️ Autonomous Agents (Server Layer)
 
-To launch the platform locally:
+Lightweight Bash agents run via `cron` on each server.
+
+### 🔐 `infra-agent.sh` (Security Engine)
+
+* Malware detection (PHP shells, backdoors)
+* Risk scoring system
+* Auto firewall blocking (`ufw`)
+* File quarantine (`/var/quarantine`)
+* Permission enforcement
+* Attack surface analysis
+* Pushes structured JSON → Redis
+
+---
+
+### 💾 `dbbkp.sh` (Backup Engine)
+
+* MySQL / MariaDB backups
+* Filesystem snapshots (tarballs)
+* Remote backup streaming
+* Disaster recovery ready
+* Can run standalone or headless
+
+---
+
+## 2. 🧠 Control Plane (Node.js)
+
+Located in:
+
+```
+apps/api
+apps/worker
+```
+
+---
+
+### ⚡ API Layer (`apps/api`)
+
+* tRPC backend
+* Auth + session management
+* Node + pipeline management
+* Internal secure endpoints
+
+---
+
+### ⚙️ Worker (`apps/worker`)
+
+* BullMQ-based async processor
+* Consumes Redis events (`infra:events`)
+* Handles:
+
+  * Backup triggers
+  * Security responses
+  * CI/CD pipelines
+
+---
+
+### 🔄 Event Flow Example
+
+```
+infra-agent detects HIGH_RISK
+        ↓
+Push → Redis (infra:events)
+        ↓
+Worker consumes (BLPOP)
+        ↓
+Rate-limit + idempotency (SHA-1 hashing)
+        ↓
+Trigger dbbkp (headless backup)
+        ↓
+Proceed with remediation
+```
+
+---
+
+## 3. 🌐 Frontend Layer
+
+### 🖥️ Panel (`apps/panel`)
+
+* Next.js 15
+* Admin dashboard
+* Node monitoring
+* Security insights
+* Quarantine review system
+
+---
+
+### 🌍 Web (`apps/web`)
+
+* Optional Vite-based frontend
+* Lightweight UI layer
+
+---
+
+## 4. 🗄️ Database Layer
+
+Located in:
+
+```
+packages/db
+```
+
+* PostgreSQL
+* Drizzle ORM
+* Versioned migrations
+* Seeded admin system
+
+---
+
+## 5. 🧩 Runner Layer
+
+Located in:
+
+```
+packages/runner
+```
+
+* Executes Bash agents
+* Resolves script paths dynamically
+* Supports dev + production environments
+
+---
+
+# 📦 Monorepo Structure
+
+```
+apps/
+  api/        → backend (tRPC)
+  worker/     → async job runner
+  panel/      → Next.js admin UI
+  web/        → Vite frontend
+
+packages/
+  db/         → schema + migrations + seed
+  runner/     → script execution engine
+
+scripts/
+  infra-agent.sh
+  dbbkp.sh
+```
+
+---
+
+# 🔄 Agent Sync System (Zero Manual Updates)
+
+Agents are always kept up-to-date automatically.
+
+### How it works
+
+During:
 
 ```bash
-# 1. Install dependencies (This automatically syncs the latest bash agents!)
 pnpm install
+```
 
-# 2. Start the development server (Web, API, and Worker)
-pnpm run dev
+A `postinstall` hook runs:
+
+```
+sync-scripts.js
+```
+
+It:
+
+* Fetches latest scripts from GitHub (`main` branch)
+* Updates:
+
+  * `infra-agent.sh`
+  * `dbbkp.sh`
+* Stores them in `/scripts`
+
+---
+
+### Runtime Resolution
+
+`@dbbkp/runner` uses:
+
+```
+resolveScriptPath()
+```
+
+So your app:
+
+* Always executes latest scripts
+* Works in both local + production environments
+* Requires zero manual sync
+
+---
+
+# ⚙️ Setup (Local Development)
+
+---
+
+## 1. Install dependencies
+
+```bash
+pnpm install
+```
+
+---
+
+## 2. Configure environment
+
+Create `.env`:
+
+```env
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/dbbkp_panel
+
+JWT_SECRET=your-secret
+API_PORT=4000
+
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+```
+
+---
+
+## 3. Setup Database (IMPORTANT)
+
+```bash
+export $(grep -v '^#' .env | xargs)
+```
+
+---
+
+### Generate migrations
+
+```bash
+pnpm --filter @dbbkp/db db:generate
+```
+
+---
+
+### Apply migrations
+
+```bash
+pnpm --filter @dbbkp/db db:migrate
+```
+
+---
+
+### Seed admin
+
+```bash
+pnpm --filter @dbbkp/db db:seed
+```
+
+---
+
+## 4. Start platform
+
+```bash
+pnpm dev
+```
+
+---
+
+# 🔐 Default Admin Access
+
+```
+Username: admin
+Password: admin123
+```
+
+---
+
+# 🔁 Development Utilities
+
+### Clean restart
+
+```bash
+pnpm dev:clean
+```
+
+---
+
+### Kill processes
+
+```bash
+pkill -9 node
+```
+
+---
+
+# 🚀 PaaS Deployment Engine (Pipelines)
+
+Deploy applications using:
+
+* Git repositories
+* Custom build commands
+* Containerized environments
+
+---
+
+## Example Pipeline
+
+```
+Name: express-app
+Repo: https://github.com/expressjs/express
+Branch: master
+
+Build: npm install
+Deploy: node examples/hello-world/index.js
+```
+
+---
+
+## Pipeline Flow
+
+```
+Git Clone
+   ↓
+Docker Build Environment
+   ↓
+Run Build Command
+   ↓
+Run Deploy Command
+   ↓
+Expose via Port
+```
+
+---
+
+# 🔐 Security Design
+
+* Server-side session validation
+* Sliding inactivity timeout (30 min)
+* Redis-based event isolation
+* Internal API secured via `INTERNAL_SECRET`
+* No client-trust model
+
+---
+
+# 🧱 Production Storage Layout
+
+```
+/var/www/
+  ├── panel/        → control plane
+  ├── sites/        → deployed apps
+  ├── pipeline/     → build artifacts
+  └── backups/      → dbbkp outputs
+```
+
+---
+
+# ⚠️ Common Issues
+
+---
+
+## Database errors
+
+```
+relation does not exist
+```
+
+Fix:
+
+```bash
+pnpm --filter @dbbkp/db db:migrate
+```
+
+---
+
+## Postgres role error
+
+```
+role "user" does not exist
+```
+
+Fix:
+
+```bash
+sudo -u postgres psql
+CREATE ROLE postgres WITH LOGIN PASSWORD 'postgres';
+ALTER ROLE postgres CREATEDB;
+```
+
+---
+
+## Docker permission issues
+
+* Use Docker volumes
+* Avoid OneDrive mounts
+
+---
+
+## Port conflicts
+
+```bash
+lsof -i :3000
+lsof -i :4000
+```
+
+---
+
+# 🔮 Roadmap
+
+### Phase 1 — Scale Control Plane
+
+* Multi-node aggregation API
+* Centralized monitoring dashboard
+
+---
+
+### Phase 2 — Smart Infrastructure
+
+* Memory + CPU anomaly detection
+* Auto firewall lockdown (`ufw`, `fail2ban`)
+* AI-based diagnostics engine
+
+---
+
+### Phase 3 — Full PaaS
+
+* One-click deployments:
+
+  * WordPress
+  * Next.js
+  * Laravel
+* Auto SSL provisioning (Let's Encrypt)
+* Reverse proxy automation
+
+---
+
+### Phase 4 — Advanced Ops
+
+* Full stack migration engine
+* Cross-node restore system
+* Role-based quarantine audits
+
+---
+
+# 🏁 Summary
+
+This platform combines:
+
+* Hosting Panel → like CyberPanel / Plesk
+* PaaS → like Coolify / Dokploy
+* Security Automation → infra-agent
+* Backup Engine → dbbkp
+
+👉 Result: **A unified DevOps control plane for infrastructure at scale**
+
+---
+
+# ⚡ Pro Tip
+
+Add shortcuts:
+
+```json
+"scripts": {
+  "db:generate": "pnpm --filter @dbbkp/db db:generate",
+  "db:migrate": "pnpm --filter @dbbkp/db db:migrate",
+  "db:seed": "pnpm --filter @dbbkp/db db:seed"
+}
+```
+
+Then:
+
+```bash
+pnpm db:migrate
 ```
