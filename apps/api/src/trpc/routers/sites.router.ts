@@ -7,6 +7,7 @@ import { hostingQueue } from "../../queues";
 import crypto from "node:crypto";
 import Docker from "dockerode";
 import { cloudflare } from "../../services/cloudflare";
+import { logAudit } from "@dbbkp/audit";
 
 const docker = new Docker();
 
@@ -107,6 +108,14 @@ export const sitesRouter = router({
           }
         }
 
+        logAudit("site_create", {
+          actorId: (ctx as any)?.user?.sub,
+          targetId: newSite.id,
+          targetType: "site",
+          targetName: input.domain,
+          metadata: { runtime: input.runtime, source: input.source },
+        });
+
         return newSite;
       } catch (err: any) {
         console.error(`[Sites:Create] FAILED:`, err);
@@ -155,6 +164,13 @@ export const sitesRouter = router({
         }
       }
 
+      logAudit("site_delete", {
+        actorId: (ctx as any)?.user?.sub,
+        targetId: site.id,
+        targetType: "site",
+        targetName: site.domain,
+      });
+
       return { success: true };
     }),
 
@@ -187,5 +203,37 @@ export const sitesRouter = router({
       } catch {
         return null;
       }
+    }),
+
+  // ─── Rollback ──────────────────────────────────────────────────────────────
+  rollback: adminProcedure
+    .input(z.object({ id: z.string().uuid(), targetCommitOrTag: z.string() }))
+    .mutation(async ({ input }) => {
+      const [site] = await db.select().from(sites).where(eq(sites.id, input.id)).limit(1);
+      if (!site) throw new Error("Site not found");
+
+      if (site.source !== "git" && site.type !== "docker") {
+        throw new Error("Rollbacks are only supported for Git deployments and custom Docker images.");
+      }
+
+      console.log(`[Sites:Rollback] Initiating rollback for ${site.domain} to ${input.targetCommitOrTag}`);
+
+      await hostingQueue.add("deploy-site", {
+        siteId: site.id,
+        source: site.source,
+        repoUrl: site.repoUrl,
+        branch: site.branch,
+        targetCommit: input.targetCommitOrTag,
+      });
+
+      logAudit("rollback", {
+        actorId: (ctx as any)?.user?.sub,
+        targetId: site.id,
+        targetType: "site",
+        targetName: site.domain,
+        metadata: { targetCommitOrTag: input.targetCommitOrTag },
+      });
+
+      return { success: true, message: `Rollback to ${input.targetCommitOrTag} initiated` };
     }),
 });

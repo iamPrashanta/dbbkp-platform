@@ -5,6 +5,7 @@ import { db, users, sessions } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import crypto from "node:crypto";
+import { logAudit } from "@dbbkp/audit";
 
 const router = Router();
 
@@ -51,6 +52,14 @@ router.post("/login", async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES } as jwt.SignOptions
     );
+
+    // Fire-and-forget audit log
+    logAudit("login", {
+      actorId: user.id,
+      actorEmail: user.email,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
 
     return res.json({
       token,
@@ -109,6 +118,14 @@ router.post("/register", async (req, res) => {
       passwordHash,
       role: isFirstUser ? "admin" : role,
     }).returning({ id: users.id, username: users.username, role: users.role });
+
+    logAudit("user_create", {
+      actorEmail: email,
+      targetId: created.id,
+      targetType: "user",
+      targetName: username,
+      ip: req.ip,
+    });
 
     return res.status(201).json({ user: created });
   } catch (err: any) {

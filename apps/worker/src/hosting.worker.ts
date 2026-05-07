@@ -14,11 +14,12 @@ export const hostingWorker = new Worker(
   async (job) => {
     if (job.name !== "deploy-site") return;
 
-    const { siteId } = job.data;
+    const { siteId, targetCommit } = job.data;
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     if (!site) throw new Error("Site not found");
 
     const { domain, docRoot, type, port, source, repoUrl, branch } = site;
+    const isRollback = !!targetCommit;
     const containerName = `dbbkp-site-${site.id.slice(0, 8)}`;
     const logPath = `/var/log/dbbkp/${site.id}.log`;
 
@@ -52,35 +53,62 @@ export const hostingWorker = new Worker(
       await fs.ensureDir(docRoot);
       if (source === "git" && repoUrl) {
         log(`Cloning repository: ${repoUrl} (branch: ${branch})...`);
-        // Clean docRoot first
         await fs.emptyDir(docRoot);
-        await execa("git", ["clone", "--depth=1", "-b", branch || "main", repoUrl, docRoot]);
+        
+        if (isRollback) {
+          log(`[Rollback] Checking out specific commit/tag: ${targetCommit}`);
+          await execa("git", ["clone", repoUrl, docRoot]);
+          await execa("git", ["checkout", targetCommit], { cwd: docRoot });
+        } else {
+          await execa("git", ["clone", "--depth=1", "-b", branch || "main", repoUrl, docRoot]);
+        }
+        
+        // If not a rollback, capture the latest commit SHA for tagging later
+        if (!isRollback) {
+          try {
+            const { stdout } = await execa("git", ["rev-parse", "--short", "HEAD"], { cwd: docRoot });
+            job.data.targetCommit = stdout.trim(); // We'll use this for the Docker tag
+          } catch {}
+        }
       } else if (source === "zip") {
         log("Project source is ZIP (files already extracted or expected in docRoot)");
+        if (!isRollback) job.data.targetCommit = `v-${Date.now()}`;
       }
+
+      const activeTag = job.data.targetCommit || "latest";
+      const imageTag = `${containerName}:${activeTag}`;
 
       // 3. Build Stage (Separated)
       if (type === "docker") {
-        log(`Starting Docker native build stage for ${domain}...`);
-        
-        // We assume Dockerfile exists in docRoot
-        if (!fs.existsSync(path.join(docRoot, "Dockerfile"))) {
-          throw new Error("No Dockerfile found in project root for Docker deployment type");
-        }
+        if (isRollback) {
+          log(`[Rollback] Skipping Docker build. Using existing tagged image: ${imageTag}`);
+          // Check if image exists locally
+          try {
+            await execa("docker", ["image", "inspect", imageTag]);
+          } catch {
+            throw new Error(`Rollback failed: Image ${imageTag} not found on server.`);
+          }
+        } else {
+          log(`Starting Docker native build stage for ${domain}...`);
+          
+          if (!fs.existsSync(path.join(docRoot, "Dockerfile"))) {
+            throw new Error("No Dockerfile found in project root for Docker deployment type");
+          }
 
-        const buildCmd = ["docker", "build", "-t", containerName, "."];
-        log(`Running: ${buildCmd.join(" ")}`);
-        
-        const buildProcess = await execa("docker", ["build", "-t", containerName, "."], {
-          cwd: docRoot,
-          all: true,
-        });
-        
-        if (buildProcess.exitCode !== 0) {
-          throw new Error(`Docker build failed: ${buildProcess.all}`);
+          const buildCmd = ["docker", "build", "-t", imageTag, "-t", `${containerName}:latest`, "."];
+          log(`Running: ${buildCmd.join(" ")}`);
+          
+          const buildProcess = await execa("docker", buildCmd, {
+            cwd: docRoot,
+            all: true,
+          });
+          
+          if (buildProcess.exitCode !== 0) {
+            throw new Error(`Docker build failed: ${buildProcess.all}`);
+          }
+          
+          log(`Docker build completed successfully (Tagged: ${imageTag})`);
         }
-        
-        log("Docker build completed successfully");
       } else if (type !== "static" && type !== "php") {
         log(`Starting build stage for ${type}...`);
         const buildImage = type === "node" ? "node:20-alpine" : "python:3.11-slim";
@@ -124,9 +152,9 @@ export const hostingWorker = new Worker(
         
         let runtimeImage = buildImage;
         if (type === "php") {
-          runtimeImage = "php:8.2-apache"; // Future: Support customizable PHP versions
+          runtimeImage = "php:8.2-apache"; 
         } else if (type === "docker") {
-          runtimeImage = containerName; // Use the image we just built
+          runtimeImage = imageTag; // Use the explicitly versioned tag
         }
         
         if (!startCmd && type !== "php" && type !== "docker") {
@@ -255,6 +283,7 @@ http:
           status: "active", 
           pm2Name: containerName,
           nginxConfig: traefikConfig,
+          currentTag: activeTag,
           updatedAt: new Date() 
         }).where(eq(sites.id, siteId));
       }

@@ -1,5 +1,7 @@
 import { router, protectedProcedure } from "../trpc";
 import { z } from "zod";
+import { db, securityAlerts } from "@dbbkp/db";
+import { eq, sql } from "drizzle-orm";
 import { infraQueue } from "../../queues";
 
 export const infraRouter = router({
@@ -43,4 +45,19 @@ export const infraRouter = router({
       failedReason: j.failedReason,
     }));
   }),
+
+  alerts: protectedProcedure.query(async () => {
+    return db.select().from(securityAlerts)
+      .where(eq(securityAlerts.resolved, false))
+      .orderBy(sql`created_at DESC`);
+  }),
+
+  resolveAlert: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      await db.update(securityAlerts)
+        .set({ resolved: true, resolvedAt: new Date() })
+        .where(eq(securityAlerts.id, input.id));
+      return { success: true };
+    }),
 });

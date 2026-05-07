@@ -17,6 +17,8 @@ import authRouter from "./routes/auth";
 import sitesRouter from "./routes/sites";
 import backupRouterLegacy from "./routes/backup";
 import infraRouterLegacy from "./routes/infra";
+import webhooksRouter from "./routes/webhooks";
+import securityRouter from "./routes/security";
 
 const app = express();
 
@@ -30,6 +32,8 @@ app.use(morgan("dev", {
 // ─── REST Auth (legacy support) ─────────────────────────────
 app.use("/api/auth", authRouter);
 app.use("/api/sites", sitesRouter);
+app.use("/webhooks", webhooksRouter);
+app.use("/internal/security", securityRouter);
 
 // ─── tRPC ──────────────────────────────────────────────────
 app.use(

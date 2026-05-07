@@ -1,0 +1,21 @@
+[Unit]
+Description=dbbkp Platform Production Stack
+Requires=docker.service
+After=docker.service network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/dbbkp
+
+# Down old containers just in case
+ExecStartPre=-/usr/bin/docker compose -f docker-compose.prod.yml down --remove-orphans
+
+# Start all containers in the background
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
+
+# Stop and remove containers, networks, and volumes
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+
+[Install]
+WantedBy=multi-user.target

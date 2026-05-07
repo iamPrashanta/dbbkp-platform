@@ -1,0 +1,135 @@
+services:
+  dbbkp-traefik:
+    image: traefik:v3.0
+    container_name: dbbkp-traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@localhost}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      # Only expose panel via traefik routing or optionally map directly if requested
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/letsencrypt:/letsencrypt
+      - /opt/dbbkp/traefik/rules:/etc/traefik/rules
+    networks:
+      - dbbkp
+
+  dbbkp-postgres:
+    image: postgres:15-alpine
+    container_name: dbbkp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-dbbkp}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-dbbkp}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - dbbkp
+
+  dbbkp-redis:
+    image: redis:7-alpine
+    container_name: dbbkp-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - dbbkp
+
+  dbbkp-api:
+    build: 
+      context: .
+      dockerfile: ./apps/api/Dockerfile
+    container_name: dbbkp-api
+    restart: unless-stopped
+    depends_on:
+      - dbbkp-postgres
+      - dbbkp-redis
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${DB_USER:-dbbkp}:${DB_PASSWORD}@dbbkp-postgres:5432/${DB_NAME:-dbbkp}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@dbbkp-redis:6379
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - MASTER_KEY=${MASTER_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/www/sites:/var/www/sites
+      - /var/log/dbbkp:/var/log/dbbkp
+    networks:
+      - dbbkp
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`, `/trpc`, `/webhooks`, `/internal`)"
+      - "traefik.http.services.api.loadbalancer.server.port=4000"
+
+  dbbkp-worker:
+    build: 
+      context: .
+      dockerfile: ./apps/worker/Dockerfile
+    container_name: dbbkp-worker
+    restart: unless-stopped
+    depends_on:
+      - dbbkp-postgres
+      - dbbkp-redis
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${DB_USER:-dbbkp}:${DB_PASSWORD}@dbbkp-postgres:5432/${DB_NAME:-dbbkp}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@dbbkp-redis:6379
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - MASTER_KEY=${MASTER_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/www/sites:/var/www/sites
+      - /var/log/dbbkp:/var/log/dbbkp
+    networks:
+      - dbbkp
+
+  dbbkp-agent:
+    build: 
+      context: ./packages/agent
+      dockerfile: Dockerfile
+    container_name: dbbkp-agent
+    restart: unless-stopped
+    pid: host
+    environment:
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - API_ENDPOINT=http://dbbkp-api:4000/internal/security/report
+    volumes:
+      - /var/www/sites:/var/www/sites:ro
+      - /proc:/proc:ro
+      - /var/spool/cron:/var/spool/cron:ro
+      - /etc/cron.d:/etc/cron.d:ro
+    networks:
+      - dbbkp
+
+  dbbkp-panel:
+    build: 
+      context: .
+      dockerfile: ./apps/panel/Dockerfile
+    container_name: dbbkp-panel
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=https://${DOMAIN}/api
+      - NEXT_PUBLIC_WS_URL=wss://${DOMAIN}/ws
+    networks:
+      - dbbkp
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.panel.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.services.panel.loadbalancer.server.port=3000"
+
+networks:
+  dbbkp:
+    driver: bridge

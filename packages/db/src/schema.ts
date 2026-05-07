@@ -6,6 +6,7 @@ import {
   timestamp,
   boolean,
   integer,
+  jsonb,
 } from "drizzle-orm/pg-core";
 
 // ─── USERS ───────────────────────────────────────────────────────────────────
@@ -106,6 +107,9 @@ export const sites = pgTable("sites", {
   sslExpiry: timestamp("ssl_expiry"),
   nginxConfig: text("nginx_config"),
   active: boolean("active").default(true),
+  isPreview: boolean("is_preview").default(false),
+  parentSiteId: uuid("parent_site_id"), // Reference to main site
+  currentTag: varchar("current_tag", { length: 100 }), // e.g. v-171828328 or commit sha
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -128,13 +132,48 @@ export const pipelineLogs = pgTable("pipeline_logs", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── SECURITY ALERTS ──────────────────────────────────────────────────────────
+export const securityAlerts = pgTable("security_alerts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  siteId: uuid("site_id").references(() => sites.id, { onDelete: "cascade" }),
+  type: varchar("type", { length: 50 }).notNull(), // malware | suspicious_process | permissions | cron
+  severity: varchar("severity", { length: 20 }).notNull().default("high"),
+  message: text("message").notNull(),
+  details: text("details"), // JSON string with file path, line number, matched string, etc.
+  resolved: boolean("resolved").default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
+});
+
+// ─── SECRETS ──────────────────────────────────────────────────────────────────
+// Stores encrypted credentials: API keys, SSH keys, DB passwords, tokens
+export const secrets = pgTable("secrets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  keyName: varchar("key_name", { length: 255 }).notNull().unique(),
+  encryptedValue: text("encrypted_value").notNull(),
+  iv: varchar("iv", { length: 64 }).notNull(),
+  authTag: varchar("auth_tag", { length: 64 }).notNull(),
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // ─── AUDIT LOGS ──────────────────────────────────────────────────────────────
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").defaultRandom().primaryKey(),
-  type: varchar("type", { length: 50 }).notNull(), // security | deploy | infra
-  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
-  event: text("event").notNull(),
+  // action: what happened — login | deploy | rollback | file_edit | cron_create | db_create | ssl | dns | delete
+  action: varchar("action", { length: 100 }).notNull(),
+  // actor: who triggered it
+  actorId: uuid("actor_id").references(() => users.id, { onDelete: "set null" }),
+  actorEmail: varchar("actor_email", { length: 255 }),
+  // target: what was affected
+  targetId: uuid("target_id"),
+  targetType: varchar("target_type", { length: 50 }), // site | pipeline | db | secret
+  targetName: varchar("target_name", { length: 255 }),
+  // details
+  metadata: jsonb("metadata"),
   ip: varchar("ip", { length: 50 }),
+  userAgent: varchar("user_agent", { length: 500 }),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -161,3 +200,5 @@ export type Site = typeof sites.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type CronJob = typeof cronJobs.$inferSelect;
+export type SecurityAlert = typeof securityAlerts.$inferSelect;
+export type Secret = typeof secrets.$inferSelect;
