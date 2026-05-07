@@ -8,6 +8,7 @@ import { databaseRouter } from "./routers/database.router";
 import { cronRouter } from "./routers/cron.router";
 import { filesRouter } from "./routers/files.router";
 import { auditRouter, secretsRouter } from "./routers/audit.router";
+import { nodesRouter } from "./routers/nodes.router";
 
 export const appRouter = router({
   auth: authRouter,
@@ -20,6 +21,7 @@ export const appRouter = router({
   files: filesRouter,
   audit: auditRouter,
   secrets: secretsRouter,
+  nodes: nodesRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -28,7 +28,10 @@
     "tar": "^6.2.1",
     "pm2": "^5.3.1",
     "dockerode": "^4.0.2",
-    "adm-zip": "^0.5.10"
+    "adm-zip": "^0.5.10",
+    "node-pty": "^1.0.0",
+    "@dbbkp/audit": "workspace:*",
+    "@dbbkp/security": "workspace:*"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

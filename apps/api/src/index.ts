@@ -10,7 +10,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./trpc";
 import { createContext } from "./trpc/trpc";
 
-import { broadcastLog, setupLogWebSocketServer } from "./ws/logs";
+import { broadcastLog, setupWebSocketGateway } from "./ws/gateway";
 
 // REST routes
 import authRouter from "./routes/auth";
@@ -19,6 +19,7 @@ import backupRouterLegacy from "./routes/backup";
 import infraRouterLegacy from "./routes/infra";
 import webhooksRouter from "./routes/webhooks";
 import securityRouter from "./routes/security";
+import nodesRouter, { sweepOfflineNodes, pruneOldMetrics } from "./routes/nodes";
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/sites", sitesRouter);
 app.use("/webhooks", webhooksRouter);
 app.use("/internal/security", securityRouter);
+app.use("/internal/nodes", nodesRouter);
 
 // ─── tRPC ──────────────────────────────────────────────────
 app.use(
@@ -96,8 +98,8 @@ async function startServer() {
 
   const httpServer = http.createServer(app);
 
-  // Attach WebSocket server
-  setupLogWebSocketServer(httpServer);
+  // Attach unified WebSocket gateway
+  setupWebSocketGateway(httpServer);
 
   httpServer.listen(port, "0.0.0.0", () => {
     console.log("\n═══════════════════════════════════════");
@@ -109,6 +111,18 @@ async function startServer() {
       console.warn(`[API] Warning: Port ${DEFAULT_PORT} was busy. Fallback to ${port}.`);
     }
     console.log("═══════════════════════════════════════\n");
+
+    // ─── Background sweeps ────────────────────────────────────────────────────
+    // Offline detection: marks nodes offline if heartbeat > 60s stale
+    setInterval(async () => {
+      try { await sweepOfflineNodes(); } catch {}
+    }, 30_000);
+
+    // Metrics retention: prune node_metrics older than 7 days
+    pruneOldMetrics().catch(() => {});
+    setInterval(async () => {
+      try { await pruneOldMetrics(); } catch {}
+    }, 24 * 60 * 60 * 1000);
   });
 
   httpServer.on("error", (err: any) => {

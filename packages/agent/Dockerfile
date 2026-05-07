@@ -1,7 +1,9 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /build
+COPY go.mod .
 COPY main.go .
-RUN go build -o dbbkp-agent main.go
+COPY internal/ ./internal/
+RUN go build -o dbbkp-agent .
 
 # Minimal final image
 FROM alpine:3.19

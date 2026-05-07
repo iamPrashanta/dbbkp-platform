@@ -188,6 +188,62 @@ export const cronJobs = pgTable("cron_jobs", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── NODES ──────────────────────────────────────────────────────────────────
+export const nodes = pgTable("nodes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  hostname: varchar("hostname", { length: 255 }).notNull(),
+  // Hashed token (bcrypt). Never stored in plaintext.
+  tokenHash: text("token_hash").notNull(),
+  // Network info
+  ip: varchar("ip", { length: 64 }),
+  publicIp: varchar("public_ip", { length: 64 }),
+  // Hardware info (populated at registration)
+  os: varchar("os", { length: 100 }),
+  arch: varchar("arch", { length: 20 }),
+  cpuCores: integer("cpu_cores"),
+  memoryMb: integer("memory_mb"),
+  // Software info
+  dockerVersion: varchar("docker_version", { length: 50 }),
+  agentVersion: varchar("agent_version", { length: 50 }),
+  // Status: online | offline | degraded
+  status: varchar("status", { length: 20 }).notNull().default("offline"),
+  // Scheduling labels: ["production", "mumbai", "high-memory"]
+  tags: jsonb("tags").$type<string[]>().default([]),
+  lastHeartbeatAt: timestamp("last_heartbeat_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// ─── NODE METRICS ──────────────────────────────────────────────────────────
+// Time-series resource snapshots. Retained for 7 days, then pruned.
+export const nodeMetrics = pgTable("node_metrics", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").notNull().references(() => nodes.id, { onDelete: "cascade" }),
+  cpuUsage: integer("cpu_usage"),   // percentage 0-100
+  memoryUsage: integer("memory_usage"), // percentage 0-100
+  diskUsage: integer("disk_usage"),    // percentage 0-100
+  networkRxKb: integer("network_rx_kb"),
+  networkTxKb: integer("network_tx_kb"),
+  timestamp: timestamp("timestamp").defaultNow(),
+});
+
+// ─── TERMINAL SESSIONS ──────────────────────────────────────────────────────────
+export const terminalSessions = pgTable("terminal_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "set null" }),
+  siteId: uuid("site_id").references(() => sites.id, { onDelete: "set null" }),
+  // shell | container | restricted
+  sessionType: varchar("session_type", { length: 30 }).notNull().default("container"),
+  targetContainerId: varchar("target_container_id", { length: 100 }),
+  status: varchar("status", { length: 20 }).notNull().default("active"), // active | closed
+  // Compressed asciinema-format recording for audit
+  recording: text("recording"),
+  startedAt: timestamp("started_at").defaultNow(),
+  endedAt: timestamp("ended_at"),
+});
+
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -202,3 +258,6 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export type CronJob = typeof cronJobs.$inferSelect;
 export type SecurityAlert = typeof securityAlerts.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
+export type Node = typeof nodes.$inferSelect;
+export type NodeMetric = typeof nodeMetrics.$inferSelect;
+export type TerminalSession = typeof terminalSessions.$inferSelect;
