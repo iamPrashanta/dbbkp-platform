@@ -60,7 +60,28 @@ export const hostingWorker = new Worker(
       }
 
       // 3. Build Stage (Separated)
-      if (type !== "static") {
+      if (type === "docker") {
+        log(`Starting Docker native build stage for ${domain}...`);
+        
+        // We assume Dockerfile exists in docRoot
+        if (!fs.existsSync(path.join(docRoot, "Dockerfile"))) {
+          throw new Error("No Dockerfile found in project root for Docker deployment type");
+        }
+
+        const buildCmd = ["docker", "build", "-t", containerName, "."];
+        log(`Running: ${buildCmd.join(" ")}`);
+        
+        const buildProcess = await execa("docker", ["build", "-t", containerName, "."], {
+          cwd: docRoot,
+          all: true,
+        });
+        
+        if (buildProcess.exitCode !== 0) {
+          throw new Error(`Docker build failed: ${buildProcess.all}`);
+        }
+        
+        log("Docker build completed successfully");
+      } else if (type !== "static" && type !== "php") {
         log(`Starting build stage for ${type}...`);
         const buildImage = type === "node" ? "node:20-alpine" : "python:3.11-slim";
         
@@ -101,7 +122,14 @@ export const hostingWorker = new Worker(
         log("Starting runtime container...");
         let startCmd = site.startCommand;
         
-        if (!startCmd) {
+        let runtimeImage = buildImage;
+        if (type === "php") {
+          runtimeImage = "php:8.2-apache"; // Future: Support customizable PHP versions
+        } else if (type === "docker") {
+          runtimeImage = containerName; // Use the image we just built
+        }
+        
+        if (!startCmd && type !== "php" && type !== "docker") {
           if (type === "node") {
             startCmd = "npm start";
           } else if (type === "python") {
@@ -112,33 +140,36 @@ export const hostingWorker = new Worker(
           }
         }
         
+        const exposedPort = type === "php" ? 80 : port;
+        const hostPort = port;
+
         const container = await docker.createContainer({
-          Image: buildImage,
+          Image: runtimeImage,
           name: containerName,
-          ExposedPorts: { [`${port}/tcp`]: {} },
+          ExposedPorts: { [`${exposedPort}/tcp`]: {} },
           Healthcheck: {
-            Test: ["CMD", "sh", "-c", `nc -z localhost ${port} || exit 1`],
+            Test: type === "php" ? ["CMD", "curl", "-f", "http://localhost"] : ["CMD", "sh", "-c", `nc -z localhost ${exposedPort} || exit 1`],
             Interval: 10 * 1000000000, // 10s
             Timeout: 5 * 1000000000,   // 5s
             Retries: 3,
             StartPeriod: 15 * 1000000000, // 15s grace
           },
           HostConfig: {
-            Binds: [
-              `${docRoot}:/app`,
-              "/app/node_modules",
-              "/app/.venv"
-            ],
-            PortBindings: { [`${port}/tcp`]: [{ HostPort: String(port) }] },
+            Binds: type === "php" 
+              ? [`${docRoot}:/var/www/html`] 
+              : type === "docker"
+              ? [] // Native docker builds don't map source code at runtime
+              : [`${docRoot}:/app`, "/app/node_modules", "/app/.venv"],
+            PortBindings: { [`${exposedPort}/tcp`]: [{ HostPort: String(hostPort) }] },
             RestartPolicy: { Name: "always" },
             Memory: 512 * 1024 * 1024,
             CpuPeriod: 100000,
             CpuQuota: 50000,
           },
-          WorkingDir: "/app",
-          Env: [`PORT=${port}`, `NODE_ENV=production`, `PYTHONUNBUFFERED=1`],
-          Cmd: ["sh", "-c", startCmd || ""],
-          User: "0:0",
+          WorkingDir: type === "php" ? "/var/www/html" : type === "docker" ? undefined : "/app",
+          Env: [`PORT=${exposedPort}`, `NODE_ENV=production`, `PYTHONUNBUFFERED=1`],
+          Cmd: (type === "php" || type === "docker") ? undefined : ["sh", "-c", startCmd || ""],
+          User: (type === "php" || type === "docker") ? undefined : "0:0",
         });
 
         await container.start();
@@ -146,66 +177,87 @@ export const hostingWorker = new Worker(
       }
       log(`Runtime container started: ${containerName}`);
 
-      // 5. Nginx Configuration
-      log("Configuring Nginx...");
-      let nginxConfig = "";
+      // 5. Traefik Configuration
+      log("Configuring Traefik dynamic routing and SSL...");
+      let traefikConfig = "";
+      
+      const safeDomainName = domain.replace(/[^a-zA-Z0-9-]/g, "-");
 
       if (type === "static") {
-        nginxConfig = `
-server {
-    listen 80;
-    server_name ${domain};
-    root ${docRoot};
-    index index.html index.htm;
+        // For static sites, Traefik needs to serve files or we spin up a lightweight nginx/caddy container
+        // Since we are moving to a PaaS model, we'll create a lightweight static container instead of host Nginx.
+        log("Deploying lightweight static server for static site...");
+        
+        const staticContainerName = `dbbkp-static-${site.id.slice(0, 8)}`;
+        const staticContainer = await docker.createContainer({
+          Image: "nginx:alpine",
+          name: staticContainerName,
+          HostConfig: {
+            Binds: [`${docRoot}:/usr/share/nginx/html:ro`],
+            RestartPolicy: { Name: "always" },
+          },
+          Labels: {
+            "traefik.enable": "true",
+            [`traefik.http.routers.site-${safeDomainName}.rule`]: `Host(\`${domain}\`)`,
+            [`traefik.http.routers.site-${safeDomainName}.entrypoints`]: "websecure",
+            [`traefik.http.routers.site-${safeDomainName}.tls.certresolver`]: "letsencrypt",
+            [`traefik.http.services.site-${safeDomainName}.loadbalancer.server.port`]: "80",
+          }
+        });
+        await staticContainer.start();
+        
+        // Traefik docker provider will pick this up automatically! No need for file config.
+        await db.update(sites).set({ 
+          status: "active", 
+          pm2Name: staticContainerName,
+          nginxConfig: "Traefik Docker Provider",
+          updatedAt: new Date() 
+        }).where(eq(sites.id, siteId));
 
-    location / {
-        try_files $uri $uri/ =404;
-    }
-}
-`;
       } else {
-        nginxConfig = `
-server {
-    listen 80;
-    server_name ${domain};
+        // Native / Python / Node running natively or in docker without traefik labels
+        // We will generate a Traefik dynamic file config to route to localhost:port
+        
+        traefikConfig = `
+http:
+  routers:
+    site-${safeDomainName}:
+      rule: "Host(\`${domain}\`)"
+      entryPoints:
+        - "websecure"
+      service: "service-${safeDomainName}"
+      tls:
+        certResolver: "letsencrypt"
 
-    location / {
-        proxy_pass http://127.0.0.1:${port};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
+  services:
+    service-${safeDomainName}:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:${port}"
 `;
+
+        const configDir = "/opt/dbbkp/traefik/rules";
+        const configPath = `${configDir}/${domain}.yml`;
+        
+        try {
+          await fs.ensureDir(configDir);
+          await fs.writeFile(configPath, traefikConfig);
+          log(`Traefik routing file created at ${configPath}`);
+        } catch (err: any) {
+          log(`Warning: Failed to write Traefik config to ${configPath}. (Are we running in a container without volume mount?) Error: ${err.message}`);
+          // Fallback to local for development
+          const localConfigPath = path.join(process.cwd(), `traefik-rules-${domain}.yml`);
+          await fs.writeFile(localConfigPath, traefikConfig);
+          log(`Wrote fallback config to ${localConfigPath}`);
+        }
+
+        await db.update(sites).set({ 
+          status: "active", 
+          pm2Name: containerName,
+          nginxConfig: traefikConfig,
+          updatedAt: new Date() 
+        }).where(eq(sites.id, siteId));
       }
-
-      const configPath = `/etc/nginx/sites-available/dbbkp-${domain}`;
-      const enabledPath = `/etc/nginx/sites-enabled/dbbkp-${domain}`;
-      const tmpPath = `/tmp/nginx-${domain}.conf`;
-
-      await fs.writeFile(tmpPath, nginxConfig);
-      
-      try {
-        await execa("sudo", ["mv", tmpPath, configPath]);
-        await execa("sudo", ["ln", "-sf", configPath, enabledPath]);
-        await execa("sudo", ["nginx", "-t"]);
-        await execa("sudo", ["systemctl", "reload", "nginx"]);
-        log("Nginx reloaded successfully");
-      } catch (err: any) {
-        log(`Nginx reload failed: ${err.message}`);
-        throw new Error(`Nginx reload failed: ${err.message}`);
-      }
-
-      await db.update(sites).set({ 
-        status: "active", 
-        pm2Name: containerName,
-        nginxConfig,
-        updatedAt: new Date() 
-      }).where(eq(sites.id, siteId));
 
       log("Deployment completed successfully");
       return { success: true, port, containerName };

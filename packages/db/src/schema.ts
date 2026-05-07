@@ -91,7 +91,7 @@ export const pipelineRuns = pgTable("pipeline_runs", {
 export const sites = pgTable("sites", {
   id: uuid("id").defaultRandom().primaryKey(),
   domain: varchar("domain", { length: 255 }).notNull().unique(),
-  type: varchar("type", { length: 20 }).notNull().default("static"), // static | node | python | php
+  type: varchar("type", { length: 20 }).notNull().default("static"), // static | node | python | php | docker
   docRoot: text("doc_root").notNull(),
   port: integer("port"), // Internal port for the app
   pm2Name: varchar("pm2_name", { length: 100 }), // PM2 process name
@@ -138,6 +138,17 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── CRON JOBS ───────────────────────────────────────────────────────────────
+export const cronJobs = pgTable("cron_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  siteId: uuid("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  command: text("command").notNull(),
+  schedule: varchar("schedule", { length: 100 }).notNull(), // cron expression e.g., "* * * * *"
+  active: boolean("active").default(true),
+  lastRunAt: timestamp("last_run_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -149,3 +160,4 @@ export type PipelineLog = typeof pipelineLogs.$inferSelect;
 export type Site = typeof sites.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
+export type CronJob = typeof cronJobs.$inferSelect;

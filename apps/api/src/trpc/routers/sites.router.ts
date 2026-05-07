@@ -6,6 +6,7 @@ import { getFreePort } from "../../services/port-manager";
 import { hostingQueue } from "../../queues";
 import crypto from "node:crypto";
 import Docker from "dockerode";
+import { cloudflare } from "../../services/cloudflare";
 
 const docker = new Docker();
 
@@ -49,7 +50,7 @@ export const sitesRouter = router({
     .input(
       z.object({
         domain: z.string(),
-        runtime: z.enum(["static", "node", "python"]),
+        runtime: z.enum(["static", "node", "python", "php", "docker"]),
         source: z.enum(["git", "zip"]),
         repoUrl: z.string().optional(),
         branch: z.string().default("main"),
@@ -85,6 +86,25 @@ export const sitesRouter = router({
             repoUrl: input.repoUrl,
             branch: input.branch
           });
+        }
+
+        // Auto-provision DNS if Cloudflare is enabled
+        if (cloudflare.isEnabled()) {
+          try {
+            console.log(`[Sites:Create] Provisioning DNS for ${input.domain} via Cloudflare...`);
+            const serverIp = process.env.SERVER_IP || "127.0.0.1";
+            // Check if record exists first
+            const records = await cloudflare.listRecords();
+            if (!records.find(r => r.name === input.domain)) {
+              await cloudflare.createRecord("A", input.domain, serverIp, true);
+              console.log(`[Sites:Create] DNS record created for ${input.domain}`);
+            } else {
+              console.log(`[Sites:Create] DNS record already exists for ${input.domain}`);
+            }
+          } catch (cfErr) {
+            console.error(`[Sites:Create] Cloudflare DNS provisioning failed:`, cfErr);
+            // Non-fatal, so we don't throw
+          }
         }
 
         return newSite;
@@ -124,6 +144,17 @@ export const sitesRouter = router({
 
       // 2. Delete from DB
       await db.delete(sites).where(eq(sites.id, input.id));
+
+      // 3. Cleanup DNS
+      if (cloudflare.isEnabled()) {
+        try {
+          await cloudflare.deleteRecordByName(site.domain);
+          console.log(`[Sites:Delete] DNS record removed for ${site.domain}`);
+        } catch (cfErr) {
+          console.error(`[Sites:Delete] Cloudflare DNS cleanup failed:`, cfErr);
+        }
+      }
+
       return { success: true };
     }),
 

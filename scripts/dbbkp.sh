@@ -34,49 +34,73 @@ log_to_file() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $plain_msg" >> "$LOG_FILE"
 }
 
+cleanup() {
+    rm -f "$LOCK_FILE"
+}
+
+
+json_escape() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null
+}
+
 print_msg() {
-    if [ "$JSON_MODE" -eq 1 ]; then
-        echo "{\"status\":\"success\",\"message\":\"$1\"}"
+    local msg="$1"
+
+    if [ "${JSON_MODE:-0}" -eq 1 ]; then
+        echo "{\"status\":\"success\",\"message\":$(json_escape "$msg")}"
         return
     fi
-    echo -e "\e[32m[+]\e[0m $1"
-    log_to_file "[SUCCESS] $1"
+
+    echo -e "\e[32m[+]\e[0m $msg"
+    log_to_file "[SUCCESS] $msg"
 }
 
 print_err() {
-    if [ "$JSON_MODE" -eq 1 ]; then
-        echo "{\"status\":\"error\",\"message\":\"$1\"}"
+    local msg="$1"
+
+    if [ "${JSON_MODE:-0}" -eq 1 ]; then
+        echo "{\"status\":\"error\",\"message\":$(json_escape "$msg")}"
         return
     fi
-    echo -e "\e[31m[!]\e[0m $1"
-    log_to_file "[ERROR] $1"
+
+    echo -e "\e[31m[!]\e[0m $msg" >&2
+    log_to_file "[ERROR] $msg"
 }
 
 print_info() {
-    if [ "$JSON_MODE" -eq 1 ]; then
-        echo "{\"status\":\"info\",\"message\":\"$1\"}"
+    local msg="$1"
+
+    if [ "${JSON_MODE:-0}" -eq 1 ]; then
+        echo "{\"status\":\"info\",\"message\":$(json_escape "$msg")}"
         return
     fi
-    echo -e "\e[34m[i]\e[0m $1"
-    log_to_file "[INFO] $1"
+
+    echo -e "\e[34m[i]\e[0m $msg"
+    log_to_file "[INFO] $msg"
 }
 
 print_warn() {
-    if [ "$JSON_MODE" -eq 1 ]; then
-        echo "{\"status\":\"warn\",\"message\":\"$1\"}"
+    local msg="$1"
+
+    if [ "${JSON_MODE:-0}" -eq 1 ]; then
+        echo "{\"status\":\"warn\",\"message\":$(json_escape "$msg")}"
         return
     fi
-    echo -e "\e[33m[!]\e[0m $1"
-    log_to_file "[WARN] $1"
+
+    echo -e "\e[33m[!]\e[0m $msg"
+    log_to_file "[WARN] $msg"
 }
 
 print_step() {
-    if [ "$JSON_MODE" -eq 1 ]; then
-        echo "{\"status\":\"step\",\"message\":\"$1\"}"
+    local msg="$1"
+
+    if [ "${JSON_MODE:-0}" -eq 1 ]; then
+        echo "{\"status\":\"step\",\"message\":$(json_escape "$msg")}"
         return
     fi
-    echo -e "\e[36m[→]\e[0m $1"
-    log_to_file "[STEP] $1"
+
+    echo -e "\e[36m[→]\e[0m $msg"
+    log_to_file "[STEP] $msg"
 }
 
 
@@ -696,7 +720,7 @@ file_download() {
     fi
 
     print_info "Initiating download for requested object..."
-    if with_retry "do_download_file '$T_FILE'"; then
+    if with_retry "do_download_file '$T_SRC'"; then
         print_msg "Download completed"
     else
         print_err "Download failed"

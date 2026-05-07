@@ -1,66 +1,77 @@
 "use client";
 
-import { Activity, Database, Play, RefreshCw, ShieldCheck, Workflow, Trash2 } from "lucide-react";
-import React, { useMemo, useState } from "react";
-import { PipelineForm } from "@/components/PipelineForm";
-import { PipelineTimeline } from "@/components/PipelineTimeline";
-import { TerminalLogViewer } from "@/components/TerminalLogViewer";
+import {
+  Activity,
+  Database,
+  Play,
+  RefreshCw,
+  ShieldCheck,
+  Workflow,
+  Trash2,
+  Server,
+  Globe,
+  AlertTriangle,
+  CheckCircle2,
+} from "lucide-react";
+import React, { useMemo } from "react";
 import { trpc } from "@/utils/trpc";
 
-type DashboardRun = NonNullable<ReturnType<typeof useDashboardData>["runs"][number]>;
+function usePlatformData() {
+  const pipelineQuery = trpc.pipeline.dashboard.useQuery(undefined, {
+    refetchInterval: 5000,
+  });
+  
+  const sitesQuery = trpc.sites.list.useQuery(undefined, {
+    refetchInterval: 10000,
+  });
 
-function useDashboardData() {
-  const query = trpc.pipeline.dashboard.useQuery(undefined, {
-    refetchInterval: 4000,
-    retry: false,
+  const infraQuery = trpc.infra.jobs.useQuery(undefined, {
+    refetchInterval: 10000,
   });
 
   return {
-    query,
-    pipelines: query.data?.pipelines ?? [],
-    runs: query.data?.recentRuns ?? [],
-    summary: query.data?.summary ?? { pipelines: 0, active: 0, completed: 0, failed: 0 },
+    pipelineQuery,
+    sitesQuery,
+    infraQuery,
+    isFetching: pipelineQuery.isFetching || sitesQuery.isFetching || infraQuery.isFetching,
+    pipelines: pipelineQuery.data?.pipelines ?? [],
+    sites: sitesQuery.data ?? [],
+    infraJobs: infraQuery.data ?? [],
+    summary: pipelineQuery.data?.summary ?? { pipelines: 0, active: 0, completed: 0, failed: 0 },
   };
 }
 
 export default function DashboardPage() {
   const utils = trpc.useContext();
-  const { query, pipelines, runs, summary } = useDashboardData();
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const { pipelineQuery, sitesQuery, infraQuery, isFetching, pipelines, sites, infraJobs, summary } = usePlatformData();
 
-  const selectedRun = useMemo(() => {
-    if (selectedRunId) return runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null;
-    return runs[0] ?? null;
-  }, [runs, selectedRunId]);
-
-  const logQuery = trpc.pipeline.log.useQuery(
-    { runId: selectedRun?.id ?? "" },
-    {
-      enabled: Boolean(selectedRun?.id),
-      refetchInterval: selectedRun?.status === "active" || selectedRun?.status === "waiting" ? 4000 : false,
-    },
-  );
-
-  const runPipeline = trpc.pipeline.run.useMutation({
-    onSuccess: async (data) => {
-      setSelectedRunId(data.runId);
-      await utils.pipeline.dashboard.invalidate();
-    },
+  const runInfraScan = trpc.infra.scan.useMutation({
+    onSuccess: () => utils.infra.jobs.invalidate(),
   });
 
-  const deletePipeline = trpc.pipeline.delete.useMutation({
+  const runPipeline = trpc.pipeline.run.useMutation({
     onSuccess: () => utils.pipeline.dashboard.invalidate(),
   });
 
-  const queryError = query.error as { data?: { code?: string } } | null;
+  // Calculate Mock/Real Security Score from latest infra job
+  const latestScan = infraJobs.find(j => j.name === "infra-scan" && j.state === "completed");
+  const riskScore = latestScan?.result?.score ?? 0;
+  
+  const refreshAll = () => {
+    utils.pipeline.dashboard.invalidate();
+    utils.sites.list.invalidate();
+    utils.infra.jobs.invalidate();
+  };
+
+  const queryError = pipelineQuery.error as { data?: { code?: string } } | null;
   if (queryError?.data?.code === "UNAUTHORIZED") {
     return (
       <main className="auth-required">
-        <div>
-          <ShieldCheck size={28} />
-          <h1>Sign in required</h1>
-          <p>The panel is wired to protected tRPC procedures. Log in to load live jobs, pipelines, and logs.</p>
-          <a className="btn btn-primary" href="/login">Open login</a>
+        <div className="glass-panel">
+          <ShieldCheck size={32} className="text-active" />
+          <h1>Authentication Required</h1>
+          <p>Access to the DBBKP Control Plane requires an active session.</p>
+          <a className="btn btn-primary" href="/login">Sign In</a>
         </div>
       </main>
     );
@@ -71,61 +82,69 @@ export default function DashboardPage() {
       <header className="dashboard-header">
         <div>
           <p className="eyebrow">DBBKP Control Plane</p>
-          <h1>Pipeline Operations</h1>
-          <p>Queue-backed runs, persistent job history, and live logs from isolated workers.</p>
+          <h1>Platform Overview</h1>
+          <p>Unified PaaS management, security enforcement, and deployment orchestration.</p>
         </div>
-        <button className="btn" onClick={() => utils.pipeline.dashboard.invalidate()} disabled={query.isFetching}>
-          <RefreshCw size={16} className={query.isFetching ? "spin" : ""} />
+        <button className="btn" onClick={refreshAll} disabled={isFetching}>
+          <RefreshCw size={16} className={isFetching ? "spin text-active" : ""} />
           Refresh
         </button>
       </header>
 
       <section className="metric-grid">
-        <Metric icon={<Workflow size={18} />} label="Pipelines" value={summary.pipelines} />
-        <Metric icon={<Activity size={18} />} label="Active Runs" value={summary.active} tone="active" />
-        <Metric icon={<Database size={18} />} label="Completed" value={summary.completed} tone="good" />
-        <Metric icon={<ShieldCheck size={18} />} label="Failed" value={summary.failed} tone="bad" />
+        <Metric 
+          icon={<Globe size={22} />} 
+          label="Active Sites" 
+          value={sites.length} 
+          tone="active" 
+        />
+        <Metric 
+          icon={<Workflow size={22} />} 
+          label="Pipelines" 
+          value={pipelines.length} 
+          tone="purple" 
+        />
+        <Metric 
+          icon={<Server size={22} />} 
+          label="Server Health" 
+          value="Online" 
+          tone="good" 
+        />
+        <Metric 
+          icon={<ShieldCheck size={22} />} 
+          label="Security Risk" 
+          value={riskScore > 0 ? `${riskScore}/100` : "Low"} 
+          tone={riskScore > 50 ? "bad" : riskScore > 20 ? "warning" : "good"} 
+        />
       </section>
 
-      <section className="ops-grid">
-        <section className="pipelines-panel">
+      <div className="dashboard-grid">
+        {/* Sites Panel */}
+        <section className="glass-panel">
           <div className="section-heading">
             <div>
-              <h2>Pipelines</h2>
-              <p>Trigger a run and watch the worker pick it up</p>
+              <h2>Hosted Sites</h2>
+              <p>Applications currently routed via Traefik</p>
             </div>
+            <a href="/sites" className="btn">Manage</a>
           </div>
-          <div className="pipeline-list">
-            {pipelines.length === 0 ? (
-              <div className="empty-state">No pipelines configured.</div>
+          <div className="list-container">
+            {sites.length === 0 ? (
+              <div className="empty-state">
+                <Globe size={32} />
+                <p>No sites configured</p>
+              </div>
             ) : (
-              pipelines.map((pipeline) => (
-                <div className="pipeline-row" key={pipeline.id}>
-                  <div>
-                    <strong>{pipeline.name}</strong>
-                    <span>{pipeline.repoUrl}</span>
+              sites.slice(0, 5).map((site) => (
+                <div className="list-row" key={site.id}>
+                  <div className="row-info">
+                    <strong>{site.domain}</strong>
+                    <span>{site.type} runtime • port {site.port || "N/A"}</span>
                   </div>
-                  <div className="pipeline-actions">
-                    <button
-                      className="icon-btn run-btn"
-                      title="Run pipeline"
-                      disabled={runPipeline.isLoading || !pipeline.enabled}
-                      onClick={() => runPipeline.mutate({ id: pipeline.id })}
-                    >
-                      <Play size={16} />
-                    </button>
-                    <button
-                      className="icon-btn delete-btn"
-                      title="Delete pipeline"
-                      disabled={deletePipeline.isLoading}
-                      onClick={async () => {
-                        if (confirm(`Delete pipeline ${pipeline.name}?`)) {
-                          await deletePipeline.mutateAsync({ id: pipeline.id });
-                        }
-                      }}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                  <div className="row-meta">
+                    <span className={`badge ${site.status === "running" ? "badge-success" : "badge-warning"}`}>
+                      {site.status}
+                    </span>
                   </div>
                 </div>
               ))
@@ -133,17 +152,91 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <PipelineForm onCreated={() => utils.pipeline.dashboard.invalidate()} />
-      </section>
+        {/* Security & Infra Panel */}
+        <section className="glass-panel">
+          <div className="section-heading">
+            <div>
+              <h2>Security & Infrastructure</h2>
+              <p>Real-time threat monitoring and OS-level scans</p>
+            </div>
+            <button 
+              className="btn btn-primary" 
+              onClick={() => runInfraScan.mutate({ mode: "full" })}
+              disabled={runInfraScan.isLoading}
+            >
+              <ShieldCheck size={16} />
+              Scan Now
+            </button>
+          </div>
+          <div className="list-container">
+            {infraJobs.length === 0 ? (
+              <div className="empty-state">
+                <Server size={32} />
+                <p>No infra scans executed yet</p>
+              </div>
+            ) : (
+              infraJobs.slice(0, 4).map((job) => (
+                <div className="list-row" key={job.id}>
+                  <div className="row-info">
+                    <strong>{job.name === "infra-scan" ? "Deep Security Scan" : "Health Check"}</strong>
+                    <span>{new Date(job.timestamp).toLocaleString()}</span>
+                  </div>
+                  <div className="row-meta">
+                    {job.state === "completed" ? (
+                      <span className="badge badge-success"><CheckCircle2 size={12}/> Clean</span>
+                    ) : job.state === "failed" ? (
+                      <span className="badge badge-error"><AlertTriangle size={12}/> Failed</span>
+                    ) : (
+                      <span className="badge badge-active spin"><RefreshCw size={12}/> Running</span>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
 
-      <section className="runtime-grid">
-        <PipelineTimeline
-          runs={runs as DashboardRun[]}
-          selectedId={selectedRun?.id}
-          onSelect={(run) => setSelectedRunId(run.id)}
-        />
-        <TerminalLogViewer jobId={selectedRun?.bullJobId} initialLog={logQuery.data?.log ?? selectedRun?.log} />
-      </section>
+      <div className="full-grid">
+        {/* Pipelines Panel */}
+        <section className="glass-panel">
+          <div className="section-heading">
+            <div>
+              <h2>CI/CD Deployment Pipelines</h2>
+              <p>Git-driven automated builds and deployments</p>
+            </div>
+            <a href="/pipelines" className="btn">View All</a>
+          </div>
+          <div className="list-container">
+            {pipelines.length === 0 ? (
+              <div className="empty-state">
+                <Workflow size={32} />
+                <p>No pipelines configured.</p>
+              </div>
+            ) : (
+              pipelines.map((pipeline) => (
+                <div className="list-row" key={pipeline.id}>
+                  <div className="row-info">
+                    <strong>{pipeline.name}</strong>
+                    <span>{pipeline.repoUrl}</span>
+                  </div>
+                  <div className="row-actions">
+                    <button
+                      className="btn text-success"
+                      title="Run pipeline"
+                      disabled={runPipeline.isLoading || !pipeline.enabled}
+                      onClick={() => runPipeline.mutate({ id: pipeline.id })}
+                    >
+                      <Play size={16} /> Deploy
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
+
     </main>
   );
 }
@@ -156,11 +249,11 @@ function Metric({
 }: {
   icon: React.ReactNode;
   label: string;
-  value: number;
-  tone?: "neutral" | "active" | "good" | "bad";
+  value: number | string;
+  tone?: "neutral" | "active" | "good" | "bad" | "warning" | "purple";
 }) {
   return (
-    <div className={`metric ${tone}`}>
+    <div className={`metric glass-panel ${tone}`}>
       <div className="metric-icon">{icon}</div>
       <div>
         <span>{label}</span>
