@@ -20,6 +20,8 @@ import infraRouterLegacy from "./routes/infra";
 import webhooksRouter from "./routes/webhooks";
 import securityRouter from "./routes/security";
 import nodesRouter, { sweepOfflineNodes, pruneOldMetrics } from "./routes/nodes";
+import { startExpirationReaper } from "./services/reaper";
+import { startReconciliationLoop } from "./services/reconciler";
 
 const app = express();
 
@@ -123,6 +125,12 @@ async function startServer() {
     setInterval(async () => {
       try { await pruneOldMetrics(); } catch {}
     }, 24 * 60 * 60 * 1000);
+
+    // Expiration reaper: cleanup temporary sites/previews every 10m
+    startExpirationReaper();
+
+    // Reconciliation loop: fix drift/crashed containers every 15m
+    startReconciliationLoop();
   });
 
   httpServer.on("error", (err: any) => {

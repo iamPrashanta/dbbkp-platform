@@ -7,6 +7,7 @@ import {
   boolean,
   integer,
   jsonb,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // ─── USERS ───────────────────────────────────────────────────────────────────
@@ -42,15 +43,14 @@ export const servers = pgTable("servers", {
 });
 
 // ─── JOBS ─────────────────────────────────────────────────────────────────────
-// Persisted mirror of BullMQ jobs for querying history
 export const jobs = pgTable("jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
-  bullJobId: varchar("bull_job_id", { length: 100 }), // BullMQ job id
-  type: varchar("type", { length: 50 }).notNull(), // backup | infra | pipeline
+  bullJobId: varchar("bull_job_id", { length: 100 }),
+  type: varchar("type", { length: 50 }).notNull(),
   name: varchar("name", { length: 100 }).notNull(),
-  status: varchar("status", { length: 20 }).notNull().default("waiting"), // waiting | active | completed | failed
-  payload: text("payload"),   // JSON input
-  result: text("result"),     // JSON output
+  status: varchar("status", { length: 20 }).notNull().default("waiting"),
+  payload: text("payload"),
+  result: text("result"),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow(),
   finishedAt: timestamp("finished_at"),
@@ -64,7 +64,7 @@ export const pipelines = pgTable("pipelines", {
   branch: varchar("branch", { length: 255 }).default("main"),
   buildCommand: text("build_command"),
   deployCommand: text("deploy_command"),
-  envVars: text("env_vars"), // JSON key-value pairs
+  envVars: text("env_vars"),
   enabled: boolean("enabled").default(true),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -88,15 +88,15 @@ export const pipelineRuns = pgTable("pipeline_runs", {
   durationMs: integer("duration_ms"),
 });
 
-// ─── SITES (traditional hosting) ─────────────────────────────────────────────
+// ─── SITES ────────────────────────────────────────────────────────────────────
 export const sites = pgTable("sites", {
   id: uuid("id").defaultRandom().primaryKey(),
   domain: varchar("domain", { length: 255 }).notNull().unique(),
-  type: varchar("type", { length: 20 }).notNull().default("static"), // static | node | python | php | docker
+  type: varchar("type", { length: 20 }).notNull().default("static"),
   docRoot: text("doc_root").notNull(),
-  port: integer("port"), // Internal port for the app
-  pm2Name: varchar("pm2_name", { length: 100 }), // PM2 process name
-  source: varchar("source", { length: 20 }).notNull().default("zip"), // zip | git
+  port: integer("port"),
+  pm2Name: varchar("pm2_name", { length: 100 }),
+  source: varchar("source", { length: 20 }).notNull().default("zip"),
   repoUrl: text("repo_url"),
   branch: varchar("branch", { length: 100 }).default("main"),
   buildCommand: text("build_command"),
@@ -108,8 +108,23 @@ export const sites = pgTable("sites", {
   nginxConfig: text("nginx_config"),
   active: boolean("active").default(true),
   isPreview: boolean("is_preview").default(false),
-  parentSiteId: uuid("parent_site_id"), // Reference to main site
-  currentTag: varchar("current_tag", { length: 100 }), // e.g. v-171828328 or commit sha
+  parentSiteId: uuid("parent_site_id"),
+  currentTag: varchar("current_tag", { length: 100 }),
+
+  // Resource Quotas
+  cpuLimit: integer("cpu_limit").default(1),
+  memoryLimit: integer("memory_limit").default(512),
+  pidsLimit: integer("pids_limit").default(256),
+  isReadOnly: boolean("is_read_only").default(false),
+  
+  // Reconciliation
+  desiredStatus: varchar("desired_status", { length: 20 }).default("active"),
+  lastReconciledAt: timestamp("last_reconciled_at"),
+  
+  // Expiration
+  expiresAt: timestamp("expires_at"),
+  isTemporary: boolean("is_temporary").default(false),
+  
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -117,7 +132,7 @@ export const sites = pgTable("sites", {
 // ─── DB INSTANCES ─────────────────────────────────────────────────────────────
 export const dbInstances = pgTable("db_instances", {
   id: uuid("id").defaultRandom().primaryKey(),
-  type: varchar("type", { length: 20 }).notNull(), // pgsql | mysql
+  type: varchar("type", { length: 20 }).notNull(),
   name: varchar("name", { length: 100 }).notNull().unique(),
   dbUser: varchar("db_user", { length: 100 }).notNull(),
   siteId: uuid("site_id").references(() => sites.id, { onDelete: "set null" }),
@@ -136,17 +151,16 @@ export const pipelineLogs = pgTable("pipeline_logs", {
 export const securityAlerts = pgTable("security_alerts", {
   id: uuid("id").defaultRandom().primaryKey(),
   siteId: uuid("site_id").references(() => sites.id, { onDelete: "cascade" }),
-  type: varchar("type", { length: 50 }).notNull(), // malware | suspicious_process | permissions | cron
+  type: varchar("type", { length: 50 }).notNull(),
   severity: varchar("severity", { length: 20 }).notNull().default("high"),
   message: text("message").notNull(),
-  details: text("details"), // JSON string with file path, line number, matched string, etc.
+  details: text("details"),
   resolved: boolean("resolved").default(false),
   createdAt: timestamp("created_at").defaultNow(),
   resolvedAt: timestamp("resolved_at"),
 });
 
 // ─── SECRETS ──────────────────────────────────────────────────────────────────
-// Stores encrypted credentials: API keys, SSH keys, DB passwords, tokens
 export const secrets = pgTable("secrets", {
   id: uuid("id").defaultRandom().primaryKey(),
   keyName: varchar("key_name", { length: 255 }).notNull().unique(),
@@ -161,16 +175,12 @@ export const secrets = pgTable("secrets", {
 // ─── AUDIT LOGS ──────────────────────────────────────────────────────────────
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").defaultRandom().primaryKey(),
-  // action: what happened — login | deploy | rollback | file_edit | cron_create | db_create | ssl | dns | delete
   action: varchar("action", { length: 100 }).notNull(),
-  // actor: who triggered it
   actorId: uuid("actor_id").references(() => users.id, { onDelete: "set null" }),
   actorEmail: varchar("actor_email", { length: 255 }),
-  // target: what was affected
   targetId: uuid("target_id"),
-  targetType: varchar("target_type", { length: 50 }), // site | pipeline | db | secret
+  targetType: varchar("target_type", { length: 50 }),
   targetName: varchar("target_name", { length: 255 }),
-  // details
   metadata: jsonb("metadata"),
   ip: varchar("ip", { length: 50 }),
   userAgent: varchar("user_agent", { length: 500 }),
@@ -182,7 +192,7 @@ export const cronJobs = pgTable("cron_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
   siteId: uuid("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
   command: text("command").notNull(),
-  schedule: varchar("schedule", { length: 100 }).notNull(), // cron expression e.g., "* * * * *"
+  schedule: varchar("schedule", { length: 100 }).notNull(),
   active: boolean("active").default(true),
   lastRunAt: timestamp("last_run_at"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -193,22 +203,16 @@ export const nodes = pgTable("nodes", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: varchar("name", { length: 255 }).notNull(),
   hostname: varchar("hostname", { length: 255 }).notNull(),
-  // Hashed token (bcrypt). Never stored in plaintext.
   tokenHash: text("token_hash").notNull(),
-  // Network info
   ip: varchar("ip", { length: 64 }),
   publicIp: varchar("public_ip", { length: 64 }),
-  // Hardware info (populated at registration)
   os: varchar("os", { length: 100 }),
   arch: varchar("arch", { length: 20 }),
   cpuCores: integer("cpu_cores"),
   memoryMb: integer("memory_mb"),
-  // Software info
   dockerVersion: varchar("docker_version", { length: 50 }),
   agentVersion: varchar("agent_version", { length: 50 }),
-  // Status: online | offline | degraded
   status: varchar("status", { length: 20 }).notNull().default("offline"),
-  // Scheduling labels: ["production", "mumbai", "high-memory"]
   tags: jsonb("tags").$type<string[]>().default([]),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -216,13 +220,12 @@ export const nodes = pgTable("nodes", {
 });
 
 // ─── NODE METRICS ──────────────────────────────────────────────────────────
-// Time-series resource snapshots. Retained for 7 days, then pruned.
 export const nodeMetrics = pgTable("node_metrics", {
   id: uuid("id").defaultRandom().primaryKey(),
   nodeId: uuid("node_id").notNull().references(() => nodes.id, { onDelete: "cascade" }),
-  cpuUsage: integer("cpu_usage"),   // percentage 0-100
-  memoryUsage: integer("memory_usage"), // percentage 0-100
-  diskUsage: integer("disk_usage"),    // percentage 0-100
+  cpuUsage: integer("cpu_usage"),
+  memoryUsage: integer("memory_usage"),
+  diskUsage: integer("disk_usage"),
   networkRxKb: integer("network_rx_kb"),
   networkTxKb: integer("network_tx_kb"),
   timestamp: timestamp("timestamp").defaultNow(),
@@ -234,30 +237,192 @@ export const terminalSessions = pgTable("terminal_sessions", {
   userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
   nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "set null" }),
   siteId: uuid("site_id").references(() => sites.id, { onDelete: "set null" }),
-  // shell | container | restricted
   sessionType: varchar("session_type", { length: 30 }).notNull().default("container"),
   targetContainerId: varchar("target_container_id", { length: 100 }),
-  status: varchar("status", { length: 20 }).notNull().default("active"), // active | closed
-  // Compressed asciinema-format recording for audit
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  idleTimeoutAt: timestamp("idle_timeout_at"),
   recording: text("recording"),
   startedAt: timestamp("started_at").defaultNow(),
   endedAt: timestamp("ended_at"),
 });
 
+// ─── RBAC ─────────────────────────────────────────────────────────────────────
+export const roles = pgTable("roles", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: varchar("name", { length: 50 }).notNull().unique(),
+  description: text("description"),
+  isSystem: boolean("is_system").default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const permissions = pgTable("permissions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  key: varchar("key", { length: 100 }).notNull().unique(),
+  description: text("description"),
+});
+
+export const rolePermissions = pgTable("role_permissions", {
+  roleId: uuid("role_id").references(() => roles.id, { onDelete: "cascade" }),
+  permissionId: uuid("permission_id").references(() => permissions.id, { onDelete: "cascade" }),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.roleId, t.permissionId] }),
+}));
+
+export const userRoles = pgTable("user_roles", {
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+  roleId: uuid("role_id").references(() => roles.id, { onDelete: "cascade" }),
+  tenantId: uuid("tenant_id"),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.roleId] }),
+}));
+
+// ─── CONTAINER TRACKING ───────────────────────────────────────────────────────
+export const containerInstances = pgTable("container_instances", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  dockerId: varchar("docker_id", { length: 128 }).notNull().unique(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  siteId: uuid("site_id").references(() => sites.id, { onDelete: "cascade" }),
+  tenantId: uuid("tenant_id"),
+  runtime: varchar("runtime", { length: 50 }),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ─── EDR & PROCESS EXPLORER ─────────────────────────────────────────
+export const processSnapshots = pgTable("process_snapshots", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  containerId: varchar("container_id", { length: 128 }),
+  pid: integer("pid").notNull(),
+  ppid: integer("ppid"),
+  name: varchar("name", { length: 255 }).notNull(),
+  command: text("command"),
+  cpuUsage: integer("cpu_usage"),
+  memoryUsage: integer("memory_usage"),
+  user: varchar("user", { length: 100 }),
+  sockets: jsonb("sockets"),
+  riskScore: integer("risk_score").default(0),
+  threatSignals: jsonb("threat_signals"),
+  timestamp: timestamp("timestamp").defaultNow(),
+});
+
+export const securityThreats = pgTable("security_threats", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  siteId: uuid("site_id").references(() => sites.id, { onDelete: "cascade" }),
+  containerId: varchar("container_id", { length: 128 }),
+  type: varchar("type", { length: 50 }).notNull(),
+  severity: varchar("severity", { length: 20 }).default("high"),
+  status: varchar("status", { length: 20 }).default("active"),
+  details: jsonb("details"),
+  detectedAt: timestamp("detected_at").defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
+});
+
+// ─── FIM & NETWORK TELEMETRY ──────────────────────────────────────────────────
+export const fileIntegritySnapshots = pgTable("file_integrity_snapshots", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  siteId: uuid("site_id").references(() => sites.id, { onDelete: "cascade" }),
+  filePath: text("file_path").notNull(),
+  hash: varchar("hash", { length: 64 }).notNull(),
+  inode: varchar("inode", { length: 50 }),
+  permissions: varchar("permissions", { length: 10 }),
+  entropy: integer("entropy"),
+  isExecutable: boolean("is_executable").default(false),
+  lastSeenAt: timestamp("last_seen_at").defaultNow(),
+});
+
+export const networkTelemetry = pgTable("network_telemetry", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  containerId: varchar("container_id", { length: 128 }),
+  direction: varchar("direction", { length: 10 }).notNull(),
+  protocol: varchar("protocol", { length: 10 }),
+  localAddr: varchar("local_addr", { length: 100 }),
+  remoteAddr: varchar("remote_addr", { length: 100 }),
+  remotePort: integer("remote_port"),
+  remoteAsn: integer("remote_asn"),
+  remoteCountry: varchar("remote_country", { length: 2 }),
+  dnsRequest: text("dns_request"),
+  riskScore: integer("risk_score").default(0),
+  timestamp: timestamp("timestamp").defaultNow(),
+});
+
+// ─── SECURITY HARDENING & COMPLIANCE ──────────────────────────────────────────
+export const securityPolicies = pgTable("security_policies", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 100 }).notNull(),
+  mode: varchar("mode", { length: 20 }).default("monitor"),
+  sshPolicy: jsonb("ssh_policy"),
+  firewallPolicy: jsonb("firewall_policy"),
+  userPolicy: jsonb("user_policy"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const nodeHardeningState = pgTable("node_hardening_state", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }).unique(),
+  overallScore: integer("overall_score").default(0),
+  complianceStatus: varchar("compliance_status", { length: 20 }).default("unknown"),
+  actualConfig: jsonb("actual_config"),
+  driftDetails: jsonb("drift_details"),
+  lastScannedAt: timestamp("last_scanned_at").defaultNow(),
+});
+
+export const securityRemediationPlans = pgTable("security_remediation_plans", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  policyId: uuid("policy_id").references(() => securityPolicies.id),
+  status: varchar("status", { length: 20 }).default("pending"),
+  plannedChanges: jsonb("planned_changes"),
+  rollbackData: jsonb("rollback_data"),
+  riskLevel: varchar("risk_level", { length: 20 }).default("medium"),
+  createdBy: uuid("created_by").references(() => users.id),
+  approvedBy: uuid("approved_by").references(() => users.id),
+  appliedAt: timestamp("applied_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const securityActions = pgTable("security_actions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "cascade" }),
+  planId: uuid("plan_id").references(() => securityRemediationPlans.id),
+  
+  action: varchar("action", { length: 100 }).notNull(), // e.g. disable_root_ssh
+  actorId: uuid("actor_id").references(() => users.id),
+  
+  status: varchar("status", { length: 20 }).default("success"), // success | failed | reverted
+  
+  beforeState: jsonb("before_state"),
+  afterState: jsonb("after_state"),
+  
+  rollbackSnapshotId: varchar("rollback_snapshot_id", { length: 100 }),
+  correlationId: varchar("correlation_id", { length: 100 }),
+  
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
-export type Server = typeof servers.$inferSelect;
-export type Job = typeof jobs.$inferSelect;
-export type Pipeline = typeof pipelines.$inferSelect;
-export type PipelineRun = typeof pipelineRuns.$inferSelect;
-export type PipelineLog = typeof pipelineLogs.$inferSelect;
 export type Site = typeof sites.$inferSelect;
-export type Session = typeof sessions.$inferSelect;
+export type Pipeline = typeof pipelines.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
-export type CronJob = typeof cronJobs.$inferSelect;
-export type SecurityAlert = typeof securityAlerts.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
 export type Node = typeof nodes.$inferSelect;
 export type NodeMetric = typeof nodeMetrics.$inferSelect;
 export type TerminalSession = typeof terminalSessions.$inferSelect;
+export type Role = typeof roles.$inferSelect;
+export type Permission = typeof permissions.$inferSelect;
+export type ContainerInstance = typeof containerInstances.$inferSelect;
+export type ProcessSnapshot = typeof processSnapshots.$inferSelect;
+export type SecurityThreat = typeof securityThreats.$inferSelect;
+export type FileIntegritySnapshot = typeof fileIntegritySnapshots.$inferSelect;
+export type NetworkTelemetry = typeof networkTelemetry.$inferSelect;
+export type SecurityPolicy = typeof securityPolicies.$inferSelect;
+export type NodeHardeningState = typeof nodeHardeningState.$inferSelect;
+export type SecurityRemediationPlan = typeof securityRemediationPlans.$inferSelect;
+export type SecurityAction = typeof securityActions.$inferSelect;

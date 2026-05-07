@@ -8,6 +8,8 @@ import crypto from "node:crypto";
 import Docker from "dockerode";
 import { cloudflare } from "../../services/cloudflare";
 import { logAudit } from "@dbbkp/audit";
+import { PERMISSIONS } from "../../utils/rbac";
+import { containerInstances } from "@dbbkp/db";
 
 const docker = new Docker();
 
@@ -42,12 +44,20 @@ function assertClean<T extends Record<string, any>>(obj: T): T {
 
 export const sitesRouter = router({
   // ─── List Sites ────────────────────────────────────────────────────────────
-  list: protectedProcedure.query(async () => {
-    return db.select().from(sites).orderBy(sql`created_at DESC`);
+  list: protectedProcedure.query(async ({ ctx }) => {
+    // If admin, show all. If user, show only owned.
+    if (ctx.user?.role === "admin") {
+      return db.select().from(sites).orderBy(sql`created_at DESC`);
+    }
+    return db
+      .select()
+      .from(sites)
+      .where(eq(sites.userId, ctx.user!.sub))
+      .orderBy(sql`created_at DESC`);
   }),
 
   // ─── Create Site ───────────────────────────────────────────────────────────
-  create: adminProcedure
+  create: permissionProcedure(PERMISSIONS.SITE_CREATE)
     .input(
       z.object({
         domain: z.string(),
@@ -57,7 +67,7 @@ export const sitesRouter = router({
         branch: z.string().default("main"),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       console.log(`[Sites:Create] Initializing site for domain: ${input.domain}`);
       try {
         const siteId = crypto.randomUUID();
@@ -69,6 +79,7 @@ export const sitesRouter = router({
           .insert(sites)
           .values(assertClean({
             id: siteId,
+            userId: ctx.user!.sub,
             domain: input.domain,
             type: input.runtime,
             docRoot,
@@ -126,20 +137,34 @@ export const sitesRouter = router({
   // ─── Get Site Status ───────────────────────────────────────────────────────
   get: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const [site] = await db
         .select()
         .from(sites)
-        .where(eq(sites.id, input.id))
+        .where(
+          ctx.user?.role === "admin"
+            ? eq(sites.id, input.id)
+            : sql`${sites.id} = ${input.id} AND ${sites.userId} = ${ctx.user!.sub}`
+        )
         .limit(1);
+
+      if (!site) throw new Error("Site not found or access denied");
       return site;
     }),
 
   // ─── Delete Site ───────────────────────────────────────────────────────────
-  delete: adminProcedure
+  delete: permissionProcedure(PERMISSIONS.SITE_DELETE)
     .input(z.object({ id: z.string().uuid() }))
-    .mutation(async ({ input }) => {
-      const [site] = await db.select().from(sites).where(eq(sites.id, input.id)).limit(1);
+    .mutation(async ({ input, ctx }) => {
+      const [site] = await db
+        .select()
+        .from(sites)
+        .where(
+          ctx.user?.role === "admin"
+            ? eq(sites.id, input.id)
+            : sql`${sites.id} = ${input.id} AND ${sites.userId} = ${ctx.user!.sub}`
+        )
+        .limit(1);
       if (!site) return { success: false };
 
       // 1. Cleanup Docker
@@ -152,6 +177,7 @@ export const sitesRouter = router({
       }
 
       // 2. Delete from DB
+      await db.delete(containerInstances).where(eq(containerInstances.siteId, site.id));
       await db.delete(sites).where(eq(sites.id, input.id));
 
       // 3. Cleanup DNS
@@ -177,8 +203,16 @@ export const sitesRouter = router({
   // ─── Stats (CPU/RAM) ───────────────────────────────────────────────────────
   stats: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
-    .query(async ({ input }) => {
-      const [site] = await db.select().from(sites).where(eq(sites.id, input.id)).limit(1);
+    .query(async ({ input, ctx }) => {
+      const [site] = await db
+        .select()
+        .from(sites)
+        .where(
+          ctx.user?.role === "admin"
+            ? eq(sites.id, input.id)
+            : sql`${sites.id} = ${input.id} AND ${sites.userId} = ${ctx.user!.sub}`
+        )
+        .limit(1);
       if (!site || !site.pm2Name) return null;
 
       try {
@@ -206,10 +240,18 @@ export const sitesRouter = router({
     }),
 
   // ─── Rollback ──────────────────────────────────────────────────────────────
-  rollback: adminProcedure
+  rollback: permissionProcedure(PERMISSIONS.SITE_DEPLOY)
     .input(z.object({ id: z.string().uuid(), targetCommitOrTag: z.string() }))
-    .mutation(async ({ input }) => {
-      const [site] = await db.select().from(sites).where(eq(sites.id, input.id)).limit(1);
+    .mutation(async ({ input, ctx }) => {
+      const [site] = await db
+        .select()
+        .from(sites)
+        .where(
+          ctx.user?.role === "admin"
+            ? eq(sites.id, input.id)
+            : sql`${sites.id} = ${input.id} AND ${sites.userId} = ${ctx.user!.sub}`
+        )
+        .limit(1);
       if (!site) throw new Error("Site not found");
 
       if (site.source !== "git" && site.type !== "docker") {

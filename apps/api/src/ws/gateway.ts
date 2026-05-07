@@ -29,8 +29,10 @@ import jwt from "jsonwebtoken";
 import { spawn } from "node-pty";
 import Docker from "dockerode";
 import crypto from "node:crypto";
-import { db, terminalSessions } from "@dbbkp/db";
+import { db, terminalSessions, containerInstances, sites } from "@dbbkp/db";
 import { logAudit } from "@dbbkp/audit";
+import { hasPermission, PERMISSIONS } from "../utils/rbac";
+import { ExecutionBroker } from "@dbbkp/runner";
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "dbbkp-super-secret-change-in-prod";
 const docker = new Docker();
@@ -84,6 +86,26 @@ function authenticateToken(token: string): { sub: string; role: string } | null 
   }
 }
 
+async function validateContainerOwnership(containerId: string, userId: string): Promise<string | null> {
+  // 1. Check container_instances for ownership
+  const [instance] = await db
+    .select({ siteId: containerInstances.siteId, tenantId: containerInstances.tenantId })
+    .from(containerInstances)
+    .where(db._.eq(containerInstances.dockerId, containerId))
+    .limit(1);
+
+  if (!instance) return null;
+
+  // 2. Check if user has access to this site
+  const [site] = await db
+    .select()
+    .from(sites)
+    .where(db._.and(db._.eq(sites.id, instance.siteId), db._.eq(sites.userId, userId)))
+    .limit(1);
+
+  return site ? site.id : null;
+}
+
 // ─── Terminal helpers ─────────────────────────────────────────────────────────
 
 async function openTerminal(
@@ -95,6 +117,20 @@ async function openTerminal(
   const sessionId = crypto.randomUUID();
 
   // Open PTY to docker exec inside the container
+  // 0. Policy Validation via Execution Broker
+  try {
+    await ExecutionBroker.validateIntent({
+      type: "docker.exec",
+      actorId: userId,
+      targetId: containerId,
+      command: "docker",
+      args: ["exec", "-it", containerId, "/bin/sh"],
+    });
+  } catch (err: any) {
+    ws.send(JSON.stringify({ error: `Security Policy Violation: ${err.message}` }));
+    return "";
+  }
+
   const pty = spawn("docker", ["exec", "-it", containerId, "/bin/sh"], {
     name: "xterm-256color",
     cols: 80,
@@ -237,19 +273,38 @@ export function setupWebSocketGateway(httpServer: HttpServer) {
       // ── open a terminal to a container ────────────────────────────────────
       else if (type === "terminal.open") {
         if (!id) { ws.send(JSON.stringify({ error: "containerId required" })); return; }
-        if (user!.role !== "admin") {
-          ws.send(JSON.stringify({ error: "Terminal access requires admin role" }));
+        
+        // 1. RBAC check
+        const canOpen = await hasPermission(user!.sub, PERMISSIONS.TERMINAL_OPEN);
+        if (!canOpen) {
+          ws.send(JSON.stringify({ error: "Permission denied: terminal.open" }));
           return;
         }
-        const sessionId = await openTerminal(ws, id, user!.sub, msg.siteId);
+
+        // 2. Ownership check
+        const siteId = await validateContainerOwnership(id, user!.sub);
+        if (!siteId) {
+          ws.send(JSON.stringify({ error: "Unauthorized access to container" }));
+          return;
+        }
+
+        const sessionId = await openTerminal(ws, id, user!.sub, siteId);
         ws.send(JSON.stringify({ type: "terminal.opened", sessionId }));
       }
 
       // ── send stdin to an open terminal ────────────────────────────────────
       else if (type === "terminal.input") {
+        const canWrite = await hasPermission(user!.sub, PERMISSIONS.TERMINAL_WRITE);
+        if (!canWrite) return; // Silent drop
+
         const entry = terminalMap.get(id);
         if (entry) {
           entry.pty.write(data ?? "");
+          // Update last activity for reaper
+          await db
+            .update(terminalSessions)
+            .set({ updatedAt: new Date() } as any)
+            .where(db._.eq(terminalSessions.id, id));
         }
       }
 
@@ -290,6 +345,36 @@ export function setupWebSocketGateway(httpServer: HttpServer) {
   });
 
   console.log("[WS] Unified gateway ready on /ws");
+
+  // ─── Session Reaper ────────────────────────────────────────────────────────
+  // Runs every minute to close idle or orphaned terminal sessions
+  setInterval(async () => {
+    const now = Date.now();
+    const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+    const MAX_SESSION_TIME = 2 * 60 * 60 * 1000; // 2 hours absolute max
+
+    for (const [sessionId, entry] of terminalMap.entries()) {
+      const [dbSession] = await db
+        .select()
+        .from(terminalSessions)
+        .where(db._.eq(terminalSessions.id, sessionId))
+        .limit(1);
+
+      if (!dbSession) {
+        closeTerminal(sessionId);
+        continue;
+      }
+
+      const lastActivity = dbSession.updatedAt ? new Date(dbSession.updatedAt).getTime() : new Date(dbSession.startedAt!).getTime();
+      const startedAt = new Date(dbSession.startedAt!).getTime();
+
+      if (now - lastActivity > IDLE_TIMEOUT || now - startedAt > MAX_SESSION_TIME) {
+        console.log(`[WS:Reaper] Closing stale session: ${sessionId}`);
+        closeTerminal(sessionId, dbSession.userId!);
+      }
+    }
+  }, 60_000);
+
   return wss;
 }
 

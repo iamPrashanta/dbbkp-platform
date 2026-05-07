@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 
 import { db, sessions, users } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
+import { hasPermission } from "../utils/rbac";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
@@ -120,3 +121,19 @@ export const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   }
   return next();
 });
+
+/**
+ * Procedural permission procedure.
+ * Usage: permissionProcedure(PERMISSIONS.SITE_DEPLOY).query(...)
+ */
+export const permissionProcedure = (permission: string) =>
+  protectedProcedure.use(async ({ ctx, next }) => {
+    const allowed = await hasPermission(ctx.user!.sub, permission);
+    if (!allowed) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `Missing required permission: ${permission}`,
+      });
+    }
+    return next();
+  });

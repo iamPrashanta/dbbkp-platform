@@ -1,10 +1,12 @@
 import { Worker } from "bullmq";
 import { connection } from "./connection";
-import { db, sites } from "@dbbkp/db";
+import { db, sites, containerInstances } from "@dbbkp/db";
 import { eq } from "drizzle-orm";
 import Docker from "dockerode";
 import execa from "execa";
 import fs from "fs-extra";
+import path from "path";
+import { ExecutionBroker } from "@dbbkp/runner";
 
 const docker = new Docker();
 
@@ -12,6 +14,33 @@ const docker = new Docker();
 export const hostingWorker = new Worker(
   "hosting",
   async (job) => {
+    if (job.name === "delete-site") {
+      const { siteId } = job.data;
+      const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
+      if (!site) return;
+
+      const containerName = `dbbkp-site-${site.id.slice(0, 8)}`;
+      
+      // 1. Stop and Remove Container
+      try {
+        const container = docker.getContainer(containerName);
+        await container.stop().catch(() => {});
+        await container.remove().catch(() => {});
+        await db.delete(containerInstances).where(eq(containerInstances.siteId, site.id));
+      } catch {}
+
+      // 2. Remove Config
+      const configPath = `/opt/dbbkp/traefik/rules/${site.domain}.yml`;
+      if (await fs.pathExists(configPath)) {
+        await fs.remove(configPath);
+      }
+
+      // 3. Update DB
+      await db.delete(sites).where(eq(sites.id, siteId));
+      console.log(`[Worker] Site ${site.domain} deleted successfully`);
+      return { success: true };
+    }
+
     if (job.name !== "deploy-site") return;
 
     const { siteId, targetCommit } = job.data;
@@ -46,6 +75,7 @@ export const hostingWorker = new Worker(
           log(`Stopping/Removing old container: ${c.Id.slice(0, 12)}`);
           await container.stop().catch(() => {});
           await container.remove().catch(() => {});
+          await db.delete(containerInstances).where(eq(containerInstances.dockerId, c.Id));
         }
       }
 
@@ -190,18 +220,39 @@ export const hostingWorker = new Worker(
               : [`${docRoot}:/app`, "/app/node_modules", "/app/.venv"],
             PortBindings: { [`${exposedPort}/tcp`]: [{ HostPort: String(hostPort) }] },
             RestartPolicy: { Name: "always" },
-            Memory: 512 * 1024 * 1024,
+            // ─── Security Hardening & Quotas ──────────────────
+            Memory: (site.memoryLimit || 512) * 1024 * 1024,
             CpuPeriod: 100000,
-            CpuQuota: 50000,
+            CpuQuota: (site.cpuLimit || 1) * 100000,
+            PidsLimit: site.pidsLimit || 256,
+            ReadonlyRootfs: site.isReadOnly || false,
+            SecurityOpt: ["no-new-privileges"],
           },
           WorkingDir: type === "php" ? "/var/www/html" : type === "docker" ? undefined : "/app",
           Env: [`PORT=${exposedPort}`, `NODE_ENV=production`, `PYTHONUNBUFFERED=1`],
           Cmd: (type === "php" || type === "docker") ? undefined : ["sh", "-c", startCmd || ""],
-          User: (type === "php" || type === "docker") ? undefined : "0:0",
+          User: (type === "php" || type === "docker") ? "33:33" : "1000:1000", // Non-root by default
         });
 
         await container.start();
         log(`Runtime container started: ${containerName}`);
+
+        // Register in container_instances for RBAC ownership validation
+        const dockerInfo = await container.inspect();
+        await db
+          .insert(containerInstances)
+          .values({
+            id: crypto.randomUUID(),
+            dockerId: dockerInfo.Id,
+            siteId: site.id,
+            tenantId: site.userId, // Map to owner
+            runtime: type,
+            createdBy: site.userId,
+          })
+          .onConflictDoUpdate({
+            target: containerInstances.dockerId,
+            set: { siteId: site.id, updatedAt: new Date() } as any,
+          });
       }
       log(`Runtime container started: ${containerName}`);
 
@@ -230,9 +281,27 @@ export const hostingWorker = new Worker(
             [`traefik.http.routers.site-${safeDomainName}.entrypoints`]: "websecure",
             [`traefik.http.routers.site-${safeDomainName}.tls.certresolver`]: "letsencrypt",
             [`traefik.http.services.site-${safeDomainName}.loadbalancer.server.port`]: "80",
-          }
+          },
+          HostConfig: {
+            Binds: [`${docRoot}:/usr/share/nginx/html:ro`],
+            RestartPolicy: { Name: "always" },
+            Memory: 128 * 1024 * 1024, // Static sites get lower quota
+            CpuQuota: 20000,
+            PidsLimit: 50,
+          },
         });
         await staticContainer.start();
+        
+        // Register in container_instances
+        const staticInfo = await staticContainer.inspect();
+        await db.insert(containerInstances).values({
+          id: crypto.randomUUID(),
+          dockerId: staticInfo.Id,
+          siteId: site.id,
+          tenantId: site.userId,
+          runtime: "static",
+          createdBy: site.userId,
+        }).onConflictDoNothing();
         
         // Traefik docker provider will pick this up automatically! No need for file config.
         await db.update(sites).set({ 
